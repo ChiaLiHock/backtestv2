@@ -22,8 +22,8 @@ from backtest.tools.validate_rule import walk_forward
 
 MYT = timezone(timedelta(hours=8))
 HORIZON = 24 * 3600_000
-# Cost disabled at the owner's request (2026-09-23): read the gross edge.
-COST = 0.0
+# SNAPSHOT ONLY — the cost the 77.5% run used (single taker side).
+COST = 0.85e-4
 
 
 def fold(df, step):
@@ -81,14 +81,12 @@ def run_sweep_trades(h15, pt, ph, pl, pc):
                 continue
 
             zone_w = state.zone_width
-            # The return is only CONFIRMED when the 15m bar CLOSES — entry
-            # at that bar's own open would be lookahead (the open predates
-            # the confirmation by up to 15 minutes and, for a reclaimed
-            # low, sits systematically below the confirm price). Enter at
-            # the first 1m open AFTER the bar close.
-            entry_t = int(t15[j] + (t15[j + 1] - t15[j]) if j + 1 < n
-                          else t15[j] + 900_000)
-            k = int(np.searchsorted(pt, entry_t, "left"))
+            # SNAPSHOT ONLY — KNOWN LOOKAHEAD: entry at the return bar's
+            # own open takes the whole reclaim amplitude for free. This is
+            # the version that printed 77.5% win / PF 4.6 on XAU. Kept as a
+            # tagged snapshot for version control, NOT for live use.
+            entry_t = int(t15[j])
+            k = int(np.searchsorted(pt, entry_t))
             if k >= len(pt):
                 continue
             entry = float(_po[k])
