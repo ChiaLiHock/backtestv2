@@ -1,0 +1,514 @@
+<meta charset="utf-8">
+<title>Cockpit</title>
+<!--
+  The second screen. Open beside the chart, not instead of it.
+
+  The chart answers "what happened". This answers "wait or go", which is a
+  different question made of numbers rather than shapes: how far to the first
+  obstacle each way, how strong that obstacle is, and whether the force behind
+  price is building or fading.
+
+  Everything here is read from /api/cockpit. This file does no analysis of its
+  own on purpose -- a second definition of "is ADX rising" living in a <script>
+  tag would drift from the Python one within a week.
+-->
+<style>
+  :root{
+    --bg:#0E1116; --panel:#151A21; --line:#232A33; --text:#E6EDF3;
+    --dim:#6E7B8A; --muted:#98A5B3; --up:#2EBD85; --down:#F6465D;
+    --gold:#D4AF37; --warn:#E8873B; --cyan:#56D4DD;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:13px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  h2{margin:0 0 8px;font-size:10px;letter-spacing:.11em;text-transform:uppercase;
+     color:var(--dim);font-weight:600}
+  .bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 12px;
+       border-bottom:1px solid var(--line);background:var(--panel);
+       position:sticky;top:0;z-index:9}
+  button{background:#1B222B;color:var(--text);
+         border:1px solid var(--line);border-radius:6px;padding:4px 10px;
+         font-size:11px;cursor:pointer;font-family:inherit}
+  button:hover{border-color:var(--dim)}
+  button.on{background:var(--gold);color:#000;border-color:var(--gold);font-weight:600}
+  .spot{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;
+        margin-right:4px}
+  .sep{width:1px;background:var(--line);align-self:stretch;margin:0 4px}
+  .grow{flex:1}
+  .wrap{display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:10px;
+        padding:10px;align-items:start}
+  @media (max-width:820px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:11px 13px;margin-bottom:10px}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:2px 0;
+      font-variant-numeric:tabular-nums}
+  .kv .k{color:var(--muted)}
+  .big{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+  .pos{color:var(--up)} .neg{color:var(--down)} .dim{color:var(--dim)}
+  .warn{color:var(--warn)} .gold{color:var(--gold)}
+  .banner{border-radius:8px;padding:7px 10px;margin:0 10px 10px;font-size:12px;
+          border:1px solid var(--warn);color:var(--warn);background:#E8873B18}
+  /* --- the ladder ------------------------------------------------------- */
+  #ladder{position:relative;height:460px;border:1px solid var(--line);
+          border-radius:8px;background:#0B0E12;overflow:hidden}
+  .zone{position:absolute;left:0;right:0;border-radius:2px}
+  .zlab{position:absolute;right:6px;font-size:10px;
+        font-variant-numeric:tabular-nums;transform:translateY(-50%);
+        text-shadow:0 0 4px #000,0 0 4px #000;pointer-events:none}
+  .edge{position:absolute;left:0;right:0;height:1px}
+  .spotline{position:absolute;left:0;right:0;height:2px;background:var(--gold);
+            box-shadow:0 0 8px #D4AF37AA}
+  .spotlab{position:absolute;left:6px;font-size:11px;font-weight:600;
+           color:#000;background:var(--gold);border-radius:3px;padding:0 5px;
+           transform:translateY(-50%);font-variant-numeric:tabular-nums}
+  /* --- position meter --------------------------------------------------- */
+  .meter{height:8px;border-radius:4px;background:linear-gradient(
+         90deg,var(--up),#5a6b7a 45%,#5a6b7a 55%,var(--down));position:relative;
+         margin:6px 0 3px}
+  .meter i{position:absolute;top:-3px;width:3px;height:14px;background:#fff;
+           border-radius:2px;box-shadow:0 0 6px #000}
+  /* --- timeframe strip -------------------------------------------------- */
+  .tfs{display:flex;gap:6px;flex-wrap:wrap}
+  .tf{flex:1;min-width:56px;text-align:center;border:1px solid var(--line);
+      border-radius:7px;padding:5px 3px}
+  .tf .n{font-size:10px;color:var(--dim);letter-spacing:.06em}
+  .tf .a{font-size:15px;font-weight:700;line-height:1.25}
+  .tf .x{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  td{padding:2px 0;vertical-align:top}
+  td.r{text-align:right;white-space:nowrap}
+  .chan{display:flex;justify-content:space-between;gap:10px;padding:3px 0;
+        border-top:1px solid var(--line)}
+  .chan:first-child{border-top:none}
+  .tag{font-size:9px;letter-spacing:.06em;padding:1px 5px;border-radius:3px;
+       border:1px solid currentColor}
+  #read{white-space:pre-wrap;font-size:13px;line-height:1.6;margin-top:8px}
+  #read:empty::before{content:"Nothing written yet. Press Copy, paste it into the chat, and the reply lands here.";color:var(--dim)}
+  .foot{color:var(--dim);font-size:10px;line-height:1.4;margin-top:7px}
+</style>
+
+<div class="bar">
+  <span class="spot" id="spot">—</span>
+  <span id="sym" class="dim"></span>
+  <span id="symbtns"></span>
+  <span class="sep"></span>
+  <span class="dim" style="font-size:11px">Refresh</span>
+  <span id="rate"></span>
+  <span class="sep"></span>
+  <button id="copy" title="Copy the current state as text, to paste into a chat">&#128203; Copy for AI</button>
+  <span class="grow"></span>
+  <span id="clock" class="dim" style="font-size:11px"></span>
+</div>
+<div id="banner"></div>
+
+<div class="wrap">
+  <div>
+    <div class="card">
+      <h2>Ladder</h2>
+      <div id="ladder"></div>
+      <div class="foot">Band thickness is the zone's width in price; opacity is
+        its strength. The gold line is spot.</div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Room</h2>
+      <div id="room"></div>
+    </div>
+    <div class="card">
+      <h2>Sessions</h2>
+      <div id="sess"></div>
+    </div>
+    <div class="card">
+      <h2>Force</h2>
+      <div id="force"></div>
+    </div>
+    <div class="card">
+      <h2>Channels</h2>
+      <div id="chans"></div>
+    </div>
+    <div class="card">
+      <h2>AI read</h2>
+      <div id="readmeta" class="dim" style="font-size:11px"></div>
+      <div id="read"></div>
+      <div class="foot">Written by hand, not generated here. Press
+        <b>Copy for AI</b>, paste it into the chat, and the reply is stored with
+        the price it was written at &mdash; a read stops being usable once price
+        has left the level it was about.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const N = (v, dp=2) => (v===null||v===undefined||v!==v) ? '—' : (+v).toFixed(dp);
+const ALIGN = {1:['up','pos'], '-1':['down','neg'], 2:['mixed','dim'], 0:['n/a','dim']};
+let SYMBOL = new URLSearchParams(location.search).get('symbol') || '';
+let BLOCK = null;
+
+/* Refresh cadence is a setting, not a per-visit choice: this page is meant to
+   be left open on a second monitor. */
+let RATE = +(localStorage.getItem('cockpitRate') ?? 5);
+const RATES = [['off',0],['5s',5],['15s',15],['60s',60]];
+
+function rateButtons(){
+  $('rate').innerHTML = '';
+  RATES.forEach(([label, secs])=>{
+    const b = document.createElement('button');
+    b.textContent = label;
+    if(secs === RATE) b.classList.add('on');
+    b.onclick = ()=>{ RATE = secs; localStorage.setItem('cockpitRate', secs);
+                      rateButtons(); schedule(); };
+    $('rate').appendChild(b);
+  });
+}
+
+let timer = null;
+function schedule(){
+  if(timer) clearTimeout(timer);
+  if(!RATE) return;
+  timer = setTimeout(()=>{ load().finally(schedule); }, RATE*1000);
+}
+
+async function load(){
+  try{
+    const q = SYMBOL ? ('?symbol='+encodeURIComponent(SYMBOL)) : '';
+    const r = await fetch('api/cockpit'+q, {cache:'no-store'});
+    BLOCK = await r.json();
+    render();
+  }catch(e){
+    $('banner').innerHTML = '<div class="banner">Cannot reach the watcher — '
+      + 'is watch.bat still running?</div>';
+  }
+}
+
+/* ---------- the ladder ------------------------------------------------------
+   A price axis with the zones drawn on it to scale. The point is to SEE the
+   asymmetry: 40 points of clear air above and a wall 8 points below is a
+   different picture from the same two numbers in a table. */
+function drawLadder(L){
+  const el = $('ladder');
+  el.innerHTML = '';
+  if(!L || !L.available){
+    el.innerHTML = '<div class="dim" style="padding:14px">'
+      + (L && L.why ? L.why : 'no levels') + '</div>';
+    return;
+  }
+  const room = L.room || {};
+  const spot = BLOCK.spot;
+  const bands = (room.ups||[]).concat(room.downs||[]);
+  if(!bands.length){ el.innerHTML='<div class="dim" style="padding:14px">no zones near price</div>'; return; }
+
+  /* Scale to what is actually in play. Including a zone 11 ATR away would
+     squash everything near price into a few pixels, which is the one thing
+     this picture must not do. */
+  let lo = spot, hi = spot;
+  bands.forEach(z=>{ lo = Math.min(lo, z.low); hi = Math.max(hi, z.high); });
+  const pad = (hi-lo)*0.08 || 1;
+  lo -= pad; hi += pad;
+  const H = el.clientHeight || 460;
+  const y = p => H - ((p - lo) / (hi - lo)) * H;
+
+  const seen = new Set();
+  bands.forEach(z=>{
+    const key = z.low+':'+z.high;
+    if(seen.has(key)) return;
+    seen.add(key);
+    const top = y(z.high), bot = y(z.low);
+    const d = document.createElement('div');
+    d.className = 'zone';
+    d.style.top = top+'px';
+    d.style.height = Math.max(2, bot-top)+'px';
+    /* Strength spans ~2 to ~22 in practice; a linear alpha would make every
+       ordinary zone invisible next to the strong one. */
+    const a = Math.min(0.55, 0.10 + Math.log10(1+Math.max(0,z.strength))*0.30);
+    const col = z.side==='resistance' ? '246,70,93' : '46,189,133';
+    d.style.background = `rgba(${col},${a.toFixed(3)})`;
+    d.style.borderTop = d.style.borderBottom = `1px solid rgba(${col},0.85)`;
+    d.title = `${z.low}–${z.high}  strength ${z.strength}  `
+            + `${z.n_sources} sources: ${(z.sources||[]).join(', ')}`;
+    el.appendChild(d);
+
+    const lab = document.createElement('div');
+    lab.className = 'zlab';
+    lab.style.top = y(z.edge)+'px';
+    lab.style.color = z.side==='resistance' ? '#F6465D' : '#2EBD85';
+    lab.textContent = `${N(z.edge)}  ${z.dist_atr!=null?z.dist_atr+' ATR':''}`
+                    + (z.containing ? '  ⟵ in it' : '');
+    el.appendChild(lab);
+  });
+
+  const sl = document.createElement('div');
+  sl.className = 'spotline'; sl.style.top = y(spot)+'px'; el.appendChild(sl);
+  const sr = document.createElement('div');
+  sr.className = 'spotlab'; sr.style.top = y(spot)+'px';
+  sr.textContent = N(spot); el.appendChild(sr);
+}
+
+function zoneRow(z, tag, cls){
+  if(!z) return `<div class="kv"><span class="k">${tag}</span><span class="dim">none</span></div>`;
+  return `<div class="kv"><span class="k">${tag}</span><span class="${cls}">`
+    + `<b>${N(z.edge)}</b> &nbsp;${N(z.dist)} &nbsp;`
+    + `<span class="dim">${z.dist_atr!=null?z.dist_atr+' ATR':''}</span></span></div>`
+    + `<div class="kv"><span class="dim" style="font-size:11px;padding-left:8px">`
+    + `strength ${z.strength} · ${z.n_sources} sources`
+    + (z.containing ? ' · <b>price is inside this zone</b>' : '')
+    + (z.flipped ? ` · <span class="warn">flipped, was ${z.was}</span>` : '')
+    + `</span><span></span></div>`;
+}
+
+function render(){
+  if(!BLOCK) return;
+  $('clock').textContent = new Date().toLocaleTimeString();
+  if(BLOCK.error){
+    $('banner').innerHTML = `<div class="banner">${BLOCK.error}</div>`;
+    return;
+  }
+  $('spot').textContent = N(BLOCK.spot);
+  $('sym').textContent = BLOCK.symbol || '';
+
+  if(!$('symbtns').dataset.built && (BLOCK.symbols||[]).length>1){
+    $('symbtns').dataset.built = '1';
+    BLOCK.symbols.forEach(s=>{
+      const b=document.createElement('button');
+      b.textContent = s.replace('USDT','');
+      if(s===BLOCK.symbol) b.classList.add('on');
+      b.onclick = ()=>{ SYMBOL=s;
+        [...$('symbtns').children].forEach(x=>x.classList.remove('on'));
+        b.classList.add('on'); load(); };
+      $('symbtns').appendChild(b);
+    });
+  }
+
+  const L = BLOCK.levels || {}, room = L.room || {};
+  const notes = [];
+  if(L.stale) notes.push(`Levels are ${L.age_hours}h old — the zone cache has `
+    + `stopped updating, so what is drawn below is not where the levels are now.`);
+  if(BLOCK.zone_error) notes.push('Zone refresh failing: '+BLOCK.zone_error);
+  const clock = BLOCK.clock || {};
+  if(clock.closing_soon) notes.push(`Market closes in <b>${clock.hours}h</b> — `
+    + `a position taken now gets under three hours to work, or carries the `
+    + `weekend gap. Every number below is about a market that is about to shut.`);
+  if(clock.open === false) notes.push(`Market is <b>shut</b>; it reopens in `
+    + `${clock.hours}h. Prices below are the last print before the close, `
+    + `not live quotes.`);
+  $('banner').innerHTML = notes.map(n=>`<div class="banner">${n}</div>`).join('');
+
+  drawLadder(L);
+
+  /* --- room --- */
+  let h = '';
+  if(!L.available){
+    h = `<div class="dim">${L.why||'no levels'}</div>`;
+  } else {
+    h += zoneRow(room.up, 'above', 'neg');
+    h += zoneRow(room.down, 'below', 'pos');
+    if(room.position!=null){
+      const p = Math.max(0, Math.min(1, room.position));
+      h += `<div style="margin-top:9px"><div class="kv"><span class="k">`
+         + `position in range</span><span>${N(room.position,3)}</span></div>`
+         + `<div class="meter"><i style="left:calc(${(p*100).toFixed(1)}% - 1px)"></i></div>`
+         + `<div class="kv" style="font-size:10px"><span class="dim">on support</span>`
+         + `<span class="dim">on resistance</span></div></div>`;
+    }
+    h += `<div class="kv" style="margin-top:6px"><span class="k">room ratio</span>`
+       + `<span>long <b class="${(room.long_rr||0)>=1?'pos':'dim'}">${room.long_rr??'—'}</b>`
+       + ` &nbsp; short <b class="${(room.short_rr||0)>=1?'pos':'dim'}">${room.short_rr??'—'}</b></span></div>`;
+    h += `<div class="kv"><span class="k">range</span><span>${N(room.span)} `
+       + `<span class="dim">(${room.span_atr??'—'} ATR)</span></span></div>`;
+    h += `<div class="kv"><span class="k">levels drawn</span><span class="dim">`
+       + `${L.age_hours}h ago at ${N(L.snapshot_price)}, price ${L.drift>=0?'+':''}`
+       + `${N(L.drift)} (${L.drift_atr??'—'} ATR) since</span></div>`;
+    h += `<div class="foot">Room ratio is geometry only: how far to the first `
+       + `obstacle each way. It says nothing about whether price gets there.</div>`;
+  }
+  $('room').innerHTML = h;
+
+  /* --- session map -------------------------------------------------------
+     亚盘定范围，欧盘扫流动，美盘定方向 — as numbers. The state line is the
+     one-glance read: inside the range, or which side was swept, or which
+     break is holding. Facts only; the sweeps and breaks say what HAPPENED,
+     never what to do. */
+  const SESS_STATE = {
+    waiting_asia:'waiting for Asia bars', in_range:'inside the Asia range',
+    above_range:'above the range', below_range:'below the range',
+    swept_high:'Asia HIGH swept', swept_low:'Asia LOW swept',
+    broke_high:'broke ABOVE the range', broke_low:'broke BELOW the range',
+  };
+  const M = BLOCK.sessions;
+  if(M && !M.error){
+    const lv = M.levels || {};
+    let m = `<div class="kv"><span class="k">phase · state</span>`
+      + `<span>${M.phase||'—'} · <b>${SESS_STATE[M.state]||M.state||'—'}</b>`
+      + (M.weekend?' <span class="warn">weekend</span>':'') + `</span></div>`;
+    /* The day read: 亚盘 range / 欧盘 statement / 美盘 verdict at 20:30. */
+    const B = M.bias;
+    if(B){
+      const BL = {long:['看多','pos'], short:['看空','neg'],
+                  range:['震荡','dim'], undecided:['未定','dim']}[B.bias]
+                || [B.bias,'dim'];
+      const when = B.phase==='asia' ? 'Asia: range by definition'
+        : B.phase==='europe' ? '欧盘表态 (US verdict '+B.verdict_myt+')'
+        : (B.ready ? '当日判定 ('+B.verdict_myt+' MYT)' : 'US verdict '+B.verdict_myt);
+      m += `<div class="kv"><span class="k">${when}</span>`
+         + `<b class="${BL[1]}" style="font-size:14px">${BL[0]}</b></div>`;
+      const basis = (B.basis||[]).slice(0,3);
+      if(basis.length)
+        m += `<div class="foot" style="margin-top:0">${
+          basis.map(x=>String(x).replace(/</g,'&lt;')).join(' · ')}</div>`;
+    }
+    if(lv.asia_high!=null){
+      m += `<div class="kv"><span class="k">Asia H / L</span><span>`
+         + `<b class="gold">${N(lv.asia_high)} / ${N(lv.asia_low)}</b>`
+         + (lv.asia_done?'':' <span class="dim">building</span>')
+         + ` <span class="dim">range ${N(lv.asia_range)}</span></span></div>`;
+      m += `<div class="kv"><span class="k">prev day H / L</span>`
+         + `<span class="dim">${N(lv.prev_day_high)} / ${N(lv.prev_day_low)}</span></div>`;
+      m += `<div class="kv"><span class="k">prev US H / L</span>`
+         + `<span class="dim">${N(lv.prev_us_high)} / ${N(lv.prev_us_low)}</span></div>`;
+    } else {
+      m += `<div class="kv"><span class="k">Asia range</span>`
+         + `<span class="dim">no bars yet today</span></div>`;
+    }
+    if(M.us){
+      const cls = M.us.verdict==='confirms' ? 'pos'
+                : M.us.verdict==='reverses' ? 'neg' : 'dim';
+      m += `<div class="kv"><span class="k">US read</span>`
+         + `<span class="${cls}">${M.us.verdict} `
+         + `<span class="dim">(move ${N(M.us.move)} vs ${N(M.us.threshold)})</span></span></div>`;
+    }
+    const evs = M.events || [];
+    if(evs.length){
+      m += '<div style="margin-top:6px">';
+      evs.slice(-5).forEach(e=>{
+        m += `<div class="kv" style="font-size:11px">`
+           + `<span class="dim">${(e.ts_myt||'').slice(11)}</span>`
+           + `<span>${e.type} @ ${N(e.price)}`
+           + (e.vol_ok===false?' <span class="dim">(quiet)</span>':'')
+           + `</span></div>`;
+      });
+      m += '</div>';
+    }
+    m += `<div class="foot">Asia 07:00–15:00 · Europe 15:00–20:00 · US 20:00–05:00 `
+       + `MYT. Sweep = poke that returned · break = 2 closes beyond · `
+       + `reclaim = a break that returned. Structure, not a signal.</div>`;
+    $('sess').innerHTML = m;
+  } else {
+    $('sess').innerHTML = '<div class="dim">session map unavailable</div>';
+  }
+
+  /* --- force --- */
+  const adx = BLOCK.adx || {}, s = BLOCK.alignment_summary || {};
+  let f = '';
+  if(adx.now!=null){
+    f += `<div class="kv"><span class="k">ADX</span><span class="big">${N(adx.now,1)}`
+      + ` <span class="${adx.rising?'pos':'neg'}" style="font-size:13px">`
+      + `${adx.rising?'▲':'▼'} ${N(adx.slope,1)}</span></span></div>`;
+    f += `<div class="foot" style="margin:0 0 8px">${adx.regime||''}</div>`;
+  }
+  f += '<div class="tfs">' + (BLOCK.alignment||[]).map(r=>{
+    const [txt, cls] = ALIGN[r.ema_alignment] || ['?','dim'];
+    const bias = r.confirmed_bias>0?['▲','pos']:r.confirmed_bias<0?['▼','neg']:['◆','dim'];
+    return `<div class="tf" title="ema ${txt} · confirmed bias · adx ${N(r.adx,1)}">`
+      + `<div class="n">${r.tf}</div>`
+      + `<div class="a ${bias[1]}">${bias[0]}</div>`
+      + `<div class="x ${cls}">${txt}</div>`
+      + `<div class="x">${N(r.adx,0)}</div></div>`;
+  }).join('') + '</div>';
+  if(s.bullish_tfs!=null){
+    f += `<div class="kv" style="margin-top:8px"><span class="k">timeframes</span>`
+      + `<span><span class="pos">${s.bullish_tfs} up</span> · `
+      + `<span class="neg">${s.bearish_tfs} down</span> · `
+      + `<span class="dim">${s.flat_tfs} flat</span>`
+      + (s.unanimous?' <b class="gold">unanimous</b>':'') + `</span></div>`;
+  }
+  const vol = BLOCK.volume || {};
+  if(vol.relative_to_20bar!=null){
+    f += `<div class="kv"><span class="k">volume</span><span>`
+      + `${N(vol.relative_to_20bar)}× <span class="dim">${vol.band||''}</span></span></div>`;
+  }
+  const oi = BLOCK.open_interest || {};
+  if(oi.available) f += `<div class="kv"><span class="k">open interest</span>`
+      + `<span>${oi.quadrant||''}</span></div>`;
+  const sess = BLOCK.session || {}, clk = BLOCK.clock || {};
+  /* `session.gold_market_open` is the MT5 broker's gold hours applied to
+     whatever symbol was asked for. The brief was fixed for this and the page
+     was not, so the two disagreed about the same symbol: BTCUSDT read
+     "market closed" here while the copied text said "open 24/7". The clock
+     knows the venue; the session block does not. */
+  const v247 = clk.venue === '24/7';
+  if(sess.label) f += `<div class="kv"><span class="k">session</span><span>`
+      + `${sess.weekday_myt||''} ${sess.label}`
+      + (v247 ? ' <span class="dim">24/7</span>'
+              : sess.gold_market_open===false
+                ? ' <span class="warn">market closed</span>' : '')
+      + `</span></div>`;
+  if(v247 && clk.cash_gold_open === false)
+    f += `<div class="kv"><span class="k"></span><span class="warn" `
+      + `style="font-size:11px">spot gold shut — weekend drift, not `
+      + `price discovery</span></div>`;
+  if(clk.hours!=null) f += `<div class="kv"><span class="k">`
+      + (clk.open ? 'closes in' : 'reopens in') + `</span><span class="`
+      + (clk.closing_soon || !clk.open ? 'warn' : '') + `">${clk.hours}h</span></div>`;
+  $('force').innerHTML = f;
+
+  /* --- channels --- */
+  $('chans').innerHTML = (BLOCK.channels||[]).map(c=>{
+    const tag = c.measured
+      ? '<span class="tag dim">measured</span>'
+      : '<span class="tag warn">mined</span>';
+    const right = c.fired
+      ? `<b class="${c.side==='long'?'pos':'neg'}">FIRING ${c.side||''}</b>`
+      : `<span class="dim">waiting on ${(c.blocking||[]).length||'—'}</span>`;
+    return `<div class="chan" title="${(c.blocking||[]).join(' · ')||c.reason||''}">`
+      + `<span>${c.name} ${tag}</span>${right}</div>`;
+  }).join('') || '<div class="dim">no channel state yet</div>';
+
+  /* --- the written read --- */
+  const ai = BLOCK.ai_read || {};
+  /* A read written about ETH must not be shown against gold's price. */
+  if(ai.text && ai.symbol && BLOCK.symbol && ai.symbol !== BLOCK.symbol){
+    $('readmeta').innerHTML = `<span class="dim">the stored read is about `
+      + `<b>${ai.symbol}</b>, not ${BLOCK.symbol}</span>`;
+    $('read').textContent = '';
+  } else if(ai.text){
+    const ageMin = (Date.now() - ai.written_ms)/60000;
+    const moved = (BLOCK.spot!=null && ai.spot!=null) ? BLOCK.spot - ai.spot : null;
+    const atr = (BLOCK.levels||{}).reference_atr;
+    const movedAtr = (moved!=null && atr) ? moved/atr : null;
+    /* A read is stale by DISTANCE, not only by clock: price leaving the level
+       it was about is what makes it wrong, and that can happen in a minute. */
+    const stale = ageMin > 90 || (movedAtr!=null && Math.abs(movedAtr) > 1);
+    $('readmeta').innerHTML =
+      `written ${ageMin<1?'just now':Math.round(ageMin)+' min ago'} at `
+      + `${N(ai.spot)}` + (moved!=null
+          ? ` · price ${moved>=0?'+':''}${N(moved)} since`
+            + (movedAtr!=null?` (${N(movedAtr,2)} ATR)`:'') : '')
+      + (stale ? ' · <b class="warn">price has moved on — re-ask</b>' : '');
+    $('read').textContent = ai.text;
+    $('read').style.opacity = stale ? 0.55 : 1;
+  } else {
+    $('readmeta').textContent = '';
+    $('read').textContent = '';
+  }
+}
+
+$('copy').onclick = async ()=>{
+  const b = $('copy'); const was = b.textContent;
+  try{
+    const q = SYMBOL ? ('?symbol='+encodeURIComponent(SYMBOL)) : '';
+    const t = await (await fetch('api/cockpit_brief'+q, {cache:'no-store'})).text();
+    await navigator.clipboard.writeText(t);
+    b.textContent = '✓ copied — paste it in the chat';
+  }catch(e){
+    b.textContent = '✗ copy failed';
+  }
+  setTimeout(()=>{ b.textContent = was; }, 2600);
+};
+
+rateButtons();
+load().finally(schedule);
+window.addEventListener('resize', ()=>{ if(BLOCK) drawLadder(BLOCK.levels||{}); });
+</script>

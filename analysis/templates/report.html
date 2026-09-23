@@ -1,0 +1,3228 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backtest report</title>
+<style>
+  /* Palette lifted from the app: ui/theme/Color.kt:23-46 */
+  :root{
+    --bg:#0E1116; --panel:#161B22; --panel2:#1F262E; --line:#232A33;
+    --text:#E6EDF3; --muted:#9AA6B2; --dim:#6E7B8A;
+    --up:#2EBD85; --down:#F6465D; --gold:#D4AF37;
+    --ema7:#58A6FF; --ema14:#BC8CFF; --ema28:#FF9E64;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:13px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif}
+  header{padding:12px 18px;border-bottom:1px solid var(--line);
+         display:flex;flex-wrap:wrap;gap:14px;align-items:baseline}
+  h1{font-size:15px;margin:0;font-weight:600}
+  .muted{color:var(--muted)} .dim{color:var(--dim)}
+  .pos{color:var(--up)} .neg{color:var(--down)}
+  .wrap{display:grid;grid-template-columns:1fr 340px;gap:0;height:calc(100vh - 56px)}
+  @media (max-width:1000px){.wrap{grid-template-columns:1fr;height:auto}}
+  /* min-width AND min-height must be 0: a flex item defaults to min-*:auto,
+     which refuses to shrink below its content. With a 100%-sized canvas inside
+     that becomes a feedback loop and the chart grows without bound (observed:
+     425,500px tall). The canvas is absolutely positioned for the same reason —
+     so it contributes nothing to layout. */
+  .main{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .bar{padding:8px 14px;border-bottom:1px solid var(--line);
+       display:flex;flex-wrap:wrap;gap:12px;align-items:center;flex:0 0 auto}
+  .group{display:flex;gap:6px;align-items:center}
+  .group+.group{border-left:1px solid var(--line);padding-left:12px}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+         border-radius:6px;padding:5px 11px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--dim)}
+  button.on{background:var(--gold);color:#000;border-color:var(--gold);font-weight:600}
+  button.sym{font-weight:600}
+  button.sym.on{background:#2f81f7;border-color:#2f81f7;color:#fff}
+  label{display:flex;gap:5px;align-items:center;cursor:pointer;user-select:none}
+  #chart{flex:1 1 0;min-height:0;position:relative;overflow:hidden}
+  @media (max-width:1000px){#chart{height:62vh;flex:0 0 auto}}
+  canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
+  canvas.measuring{cursor:cell}
+  #tip{position:absolute;pointer-events:none;background:var(--panel);
+       border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+       font-size:12px;display:none;z-index:5;box-shadow:0 6px 18px #000a;
+       min-width:238px;max-width:300px}
+  #railtip{position:absolute;pointer-events:none;background:var(--panel);
+       border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+       font-size:11px;display:none;z-index:6;box-shadow:0 6px 18px #000a;
+       min-width:210px}
+  #railtip .hd{font-weight:600;margin-bottom:5px;display:flex;
+       justify-content:space-between;gap:10px;align-items:baseline}
+  #railtip table{width:100%;font-variant-numeric:tabular-nums}
+  #railtip td{padding:1px 0;white-space:nowrap}
+  #railtip td.k{color:var(--muted);padding-right:10px}
+  #railtip td.v{text-align:right}
+  #railtip .foot{color:var(--dim);font-size:10px;margin-top:5px;
+       white-space:normal;line-height:1.35}
+  #tip h4{margin:9px 0 4px;font-size:10px;letter-spacing:.09em;color:var(--dim);
+          text-transform:uppercase;font-weight:600;
+          border-top:1px solid var(--line);padding-top:7px}
+  #tip h4:first-child{margin-top:0;border-top:none;padding-top:0}
+  #tip table{width:100%;font-size:12px}
+  #tip td{padding:1px 0;white-space:nowrap}
+  #tip td.k{color:var(--muted);padding-right:10px}
+  #tip td.v{text-align:right;font-variant-numeric:tabular-nums}
+  #tip .when{color:var(--dim);font-size:11px;line-height:1.45}
+  #tip .when b{color:var(--text);font-weight:600}
+  #tip .lvl{display:flex;justify-content:space-between;gap:10px;
+            font-variant-numeric:tabular-nums}
+  #tip .lvl .tag{font-size:10px;letter-spacing:.06em}
+  #tip .res .tag{color:var(--down)} #tip .sup .tag{color:var(--up)}
+  #tip .cur .tag{color:var(--gold)} #tip .cur{color:var(--gold)}
+  #tip .also{color:var(--dim);font-size:11px;padding-left:2px}
+  #tip .src{color:var(--dim);font-size:10px;white-space:normal;line-height:1.35}
+  #tip .stale{color:#e8c46a}
+  aside{border-left:1px solid var(--line);overflow-y:auto;background:var(--panel)}
+  @media (max-width:1000px){aside{border-left:none;border-top:1px solid var(--line);max-height:70vh}}
+  .sec{padding:12px 14px;border-bottom:1px solid var(--line)}
+  .sec h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+          color:var(--dim);margin:0 0 8px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  td{padding:2px 0;vertical-align:top}
+  td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+  .tctl{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
+  .tctl button{padding:2px 8px;font-size:11px;border-radius:5px}
+  .tctl .sep{width:1px;background:var(--line);margin:2px 4px}
+  /* A channel with nothing settled yet is still shown -- hiding it would make
+     "signal4 has not traded" look identical to "signal4 does not exist". */
+  .tctl button.dimbtn{opacity:.45}
+  .trades td{padding:5px 4px;border-bottom:1px solid var(--line)}
+  .trades tr{cursor:pointer}
+  .trades tr:hover td{background:var(--panel2)}
+  .trades tr.sel td{background:#2a2410}
+  .cmp td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:right}
+  .cmp td:first-child{text-align:left}
+  .cmp tr.here td{background:#11212f}
+  .pill{display:inline-block;padding:1px 6px;border-radius:99px;font-size:10px;
+        border:1px solid var(--line);color:var(--muted)}
+  #livepill{display:flex;gap:7px;align-items:center;font-size:11px;color:var(--dim);
+     border:1px solid var(--line);border-radius:99px;padding:3px 10px;background:var(--panel)}
+  #livepill.off{opacity:.45}
+  #dot{width:7px;height:7px;border-radius:99px;background:var(--dim);flex:0 0 auto}
+  #dot.beat{background:var(--up);box-shadow:0 0 7px var(--up)}
+  #dot.busy{background:var(--gold);box-shadow:0 0 7px var(--gold)}
+  .ok{color:var(--up)} .no{color:var(--dim)}
+  .warn{background:#3a2a08;border:1px solid #6b5310;color:#e8d9a8;
+        padding:9px 12px;border-radius:6px;margin:10px 14px;font-size:12px}
+  .hint{font-size:11px;color:var(--dim);padding:6px 14px 9px;flex:0 0 auto}
+  details summary{cursor:pointer;color:var(--muted);font-size:12px}
+  pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;
+      padding:10px;overflow:auto;font-size:11px;max-height:340px}
+  #loading{position:fixed;inset:0;background:#0E1116cc;z-index:40;display:none;
+     align-items:center;justify-content:center;font-size:14px;color:var(--muted)}
+
+  /* ---- risk panel ------------------------------------------------------ */
+  /* Two directions side by side, because the question "is a long dangerous"
+     and "is a short dangerous" have genuinely independent answers — a choppy
+     market is dangerous both ways, and a strong trend is dangerous one way. */
+  .risk{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .rside{border:1px solid var(--line);border-radius:8px;padding:8px 9px;
+         background:var(--bg)}
+  .rside.sel{border-color:var(--gold)}
+  .rside h3{margin:0 0 7px;font-size:11px;letter-spacing:.07em;font-weight:700}
+  .rside.long h3{color:var(--up)} .rside.short h3{color:var(--down)}
+  .meter{margin-bottom:7px}
+  .meter .lab{display:flex;justify-content:space-between;font-size:10px;
+              color:var(--dim);margin-bottom:3px}
+  .meter .lab b{color:var(--text);font-variant-numeric:tabular-nums;font-size:11px}
+  .track{height:6px;border-radius:99px;background:var(--panel2);overflow:hidden}
+  .fill{height:100%;border-radius:99px;transition:width .4s ease}
+  /* Danger is coloured by VALUE, not by side: 20% danger on a short is green.
+     Colouring it by side would make the meter say the same thing as its label. */
+  .fill.d0{background:var(--up)} .fill.d1{background:#C6A700}
+  .fill.d2{background:#E8873B} .fill.d3{background:var(--down)}
+  .fill.c{background:#3F7DD8}
+  .facts{display:flex;gap:4px;margin:6px 0 4px}
+  .fact{flex:1;text-align:center;background:var(--panel2);border-radius:5px;
+        padding:3px 2px;font-size:10px;color:var(--dim);line-height:1.35}
+  .fact b{display:block;color:var(--text);font-size:12px;
+          font-variant-numeric:tabular-nums}
+  .why{margin-top:6px;font-size:11px;line-height:1.45}
+  .why div{display:flex;gap:5px;margin-bottom:3px}
+  .why .ic{flex:0 0 auto;font-weight:700}
+  .why .dgr .ic{color:var(--down)} .why .sup .ic{color:var(--up)}
+  .why .dgr{color:var(--text)} .why .sup{color:var(--muted)}
+  .gatepill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:10px;
+            font-weight:700;letter-spacing:.04em}
+  .gatepill.pass{background:#10301f;color:var(--up);border:1px solid #1d5c3a}
+  .gatepill.veto{background:#3a1218;color:var(--down);border:1px solid #7a2432}
+  .biaspill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;
+            font-weight:700;border:1px solid var(--line)}
+  .biaspill.BULLISH{color:var(--up);border-color:#1d5c3a;background:#10301f}
+  .biaspill.BEARISH{color:var(--down);border-color:#7a2432;background:#3a1218}
+  .biaspill.NEUTRAL{color:var(--muted)}
+  .proxy{font-size:10px;color:#e8c46a;line-height:1.45;margin-top:8px;
+         border-top:1px solid var(--line);padding-top:7px}
+  .stale{background:#3a1218;border:1px solid #7a2432;color:#ffb3bd;
+         border-radius:6px;padding:7px 9px;font-size:11px;line-height:1.45;
+         margin-bottom:9px}
+  .stale b{color:#fff}
+  .warm{background:#3a2a08;border:1px solid #6b5310;color:#e8d9a8;
+        border-radius:6px;padding:6px 9px;font-size:11px;line-height:1.45;
+        margin-bottom:9px}
+  .legs td{padding:2px 0;font-size:11px}
+  .tfvote{width:100%;font-size:11px;margin-top:4px}
+  .tfvote td{padding:2px 0}
+  .tfvote td:first-child{color:var(--muted)}
+
+  /* ---- the signal alert ------------------------------------------------ */
+  /* Deliberately loud and deliberately dismissable. A banner you cannot clear
+     is one you learn to ignore, and then it is not an alert any more. */
+  #alert{position:fixed;left:50%;transform:translateX(-50%);top:14px;z-index:60;
+         min-width:430px;max-width:min(92vw,660px);display:none;
+         background:#0d2a1b;border:1px solid var(--up);border-radius:10px;
+         padding:13px 16px;box-shadow:0 10px 34px #000b;
+         animation:pulse 1.4s ease-in-out 4}
+  #alert.veto{background:#2f1a10;border-color:#E8873B;animation:none}
+  @keyframes pulse{0%,100%{box-shadow:0 10px 34px #000b}
+                   50%{box-shadow:0 0 0 4px #2EBD8544,0 10px 34px #000b}}
+  #alert h3{margin:0 0 5px;font-size:13px;color:var(--up);letter-spacing:.03em}
+  #alert.veto h3{color:#E8873B}
+  #alert .row{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;
+              font-variant-numeric:tabular-nums;margin-bottom:3px}
+  #alert .row span b{color:var(--text)}
+  #alert .x{position:absolute;top:7px;right:11px;cursor:pointer;color:var(--dim);
+            font-size:16px;line-height:1;background:none;border:none;padding:2px 5px}
+  #alert .x:hover{color:var(--text)}
+  button.live{background:#10301f;border-color:#1d5c3a;color:var(--up)}
+  #copytoast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+     background:var(--panel);border:1px solid var(--line);border-radius:8px;
+     padding:8px 14px;font-size:12px;z-index:70;display:none;
+     box-shadow:0 6px 20px #000a;max-width:80vw}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Backtest report</h1>
+  <span class="muted" id="sub"></span>
+  <span class="dim" id="hash"></span>
+  <span id="clock" class="dim"></span>
+  <span id="livepill" class="off"><span id="dot"></span><span id="livetext">not served live</span></span>
+</header>
+
+<div id="warnbox"></div>
+<div id="loading">loading…</div>
+<div id="alert"><button class="x" id="alertx" title="Dismiss">&times;</button>
+  <h3 id="alerth"></h3><div id="alertb"></div></div>
+<div id="copytoast"></div>
+
+<div class="wrap">
+  <div class="main">
+    <div class="bar">
+      <div class="group" id="syms"></div>
+      <div class="group" id="tfs"></div>
+      <div class="group" id="tzs"></div>
+      <div class="group" id="overlays"></div>
+      <div class="group">
+        <button id="measure" title="Then drag on the chart. Shift+drag always measures.">&#128207; Measure</button>
+        <button id="now" title="Jump to the live edge and keep following it">Now</button>
+        <button id="fit">Fit all</button>
+        <button id="prev">&lt; trade</button>
+        <button id="next">trade &gt;</button>
+      </div>
+      <div class="group">
+        <button id="awake" title="Keep this screen on and stop Windows sleeping while you watch. Does not stop the workstation lock or a lid close.">&#9749; Keep awake</button>
+        <button id="copyan" title="Copy the full live state — risk read, rule legs, levels, positions — as text you can paste into an AI">&#128203; Copy analysis</button>
+        <button id="sound" title="Beep when a signal fires">&#128266; Sound</button>
+        <button id="details" title="Show the full TECHNICAL STATE / KEY LEVELS card when you hover a bar. Off by default — the crosshair and price stay either way.">&#8505; Details</button>
+        <button id="oirefresh" title="Force a fresh open-interest sync right now, for all three symbols, instead of waiting on the watcher's own cycle.">&#8635; Refresh OI</button>
+        <button id="s4refit" title="Re-mine Signal 4 against the last 5 trading days, now. Takes about 10 seconds. If nothing meets the 85% / 3-per-day bar it writes nothing and keeps the current pattern. Runs automatically every Sunday 09:00 as well.">&#9851; Refit Signal 4</button>
+      </div>
+      <div class="group" id="filters"></div>
+    </div>
+    <div id="chart"><canvas id="cv"></canvas><div id="tip"></div><div id="railtip"></div></div>
+    <div class="hint">
+      <b>&#9650; tip = the fill</b> — its apex sits on the bar and price the trade actually
+      opened at, which is the <i>next</i> bar's open after the signal bar closed, plus slippage.
+      <b>&#10005; = the exit.</b> Colour is <b>win/loss</b>, not buy/sell.
+      <b>Dots on the gold line</b> = this timeframe's own UT cross; the <b>rail</b> below
+      shows every timeframe's UT flips on one axis, which is where confluence becomes visible.
+      A <b>hollow last candle</b> is the forming bar — drawn live, never used for a signal.
+      <b>Hollow chevrons</b> are <b>your own fills</b> imported from the broker report — up = buy,
+      down = sell, outlined green if that position made money; the small circle is where it closed.
+      The rail's <b>signal</b> lane is the strategy's own entries (solid) and exits (hollow), and
+      <b>mine</b> is yours, so agreement and disagreement are one glance apart.
+      <b>Hover a rail lane</b> to lift it out of the stack and push the rest back, and to read
+      that channel's win rate over <b>7 / 30 / 90 days</b> against its own break-even &mdash;
+      a mined pattern that has stopped working shows up as a falling sequence there and nowhere
+      else. <b>Click the lane to pin it</b>; click again to release.
+      MACD is <b>not</b> in the app &mdash; it is a backtest-only addition.
+      &middot; Drag to pan, scroll to zoom, <b>Shift+drag to measure</b>, Esc clears it.
+      The <b>crosshair</b> follows your mouse and prints the price on the axis and the
+      time under it; <b>Details</b> turns on the full hover card, which is off by default
+      because it covered the price you were reading. There is empty room to the right of
+      the newest bar so the live edge is never pinned against the axis.
+      <b>Time</b> switches the axis between Malaysia, New York and UTC; the tooltip always
+      shows all three, and New York follows EDT/EST rather than a fixed offset.
+      Markers land on the bar containing the fill, so on a 4H chart several 1H trades can share one bar.</div>
+  </div>
+
+  <aside>
+    <div class="sec" id="rulesec" style="display:none">
+      <h2>Signal <span class="dim" id="rulewhen"></span></h2>
+      <div id="rulebody"></div>
+    </div>
+    <div class="sec" id="rule2sec" style="display:none">
+      <h2>Signal 2 <span class="dim" id="rule2when"></span></h2>
+      <div id="rule2body"></div>
+    </div>
+    <div class="sec" id="rule3sec" style="display:none">
+      <h2>Signal 3 <span class="dim" id="rule3when"></span></h2>
+      <div id="rule3body"></div>
+    </div>
+    <div class="sec" id="rule4sec" style="display:none">
+      <h2>Signal 4 <span class="dim" id="rule4when"></span></h2>
+      <div id="rule4body"></div>
+    </div>
+    <div class="sec" id="rule5sec" style="display:none">
+      <h2>Signal 5 <span class="dim" id="rule5when"></span></h2>
+      <div id="rule5body"></div>
+    </div>
+    <div class="sec" id="rule7sec" style="display:none">
+      <h2>Signal 7 <span class="dim" id="rule7when"></span></h2>
+      <div id="rule7body"></div>
+    </div>
+    <div class="sec" id="risksec" style="display:none">
+      <h2>Risk read <span class="dim" id="riskwhen"></span></h2>
+      <div id="riskbody"></div>
+    </div>
+    <div class="sec" id="livesec" style="display:none">
+      <h2>Live <span class="dim" id="livewhen"></span></h2>
+      <table id="livetbl"></table>
+      <div id="liveconds" style="margin-top:8px"></div>
+    </div>
+    <div class="sec" id="sesssec" style="display:none">
+      <h2>Sessions <span class="dim" id="sesswhen"></span></h2>
+      <div id="sessbody"></div>
+    </div>
+    <div class="sec" id="cmpsec" style="display:none">
+      <h2>Across symbols <span class="dim">same window &middot; ATR-normalised size</span></h2>
+      <table class="cmp" id="cmptbl"></table>
+      <div class="dim" id="cmpnote" style="margin-top:6px;font-size:11px"></div>
+    </div>
+    <div class="sec"><h2>Summary</h2><table id="stats"></table></div>
+    <div class="sec"><h2>By signal</h2><table id="signals"></table></div>
+    <div class="sec"><h2>Trades <span class="dim" id="tcount"></span></h2>
+      <div class="tctl" id="tctl"></div>
+      <div class="dim" id="tsum" style="margin:2px 0 6px;font-size:11px"></div>
+      <table class="trades"><tbody id="tbody"></tbody></table></div>
+    <div class="sec"><details><summary>Config</summary><pre id="cfg"></pre></details></div>
+  </aside>
+</div>
+
+<script>
+/* BOOK holds one or more symbols. DATA is whichever is on screen — everything
+   below reads DATA, so switching symbol is a reassignment plus a re-render. */
+const BOOK = /*__PAYLOAD__*/;
+let DATA = BOOK.runs[BOOK.active];
+
+/* Filled by draw() as the rail is painted, read by the pointer handlers.
+   Written rather than derived, because which lanes exist depends on the
+   payload. */
+let RAIL_LANES = [];
+
+const C = {up:'#2EBD85',down:'#F6465D',gold:'#D4AF37',ema7:'#58A6FF',
+           ema14:'#BC8CFF',ema28:'#FF9E64',vwap:'#39D3C3',bb:'#7D8590',
+           grid:'#232A33',axis:'#6E7B8A',bg:'#0E1116',text:'#E6EDF3',
+           laneHi:'rgba(120,160,220,0.13)',
+           mine:'#FF7BAC'};
+
+const state = {
+  /* Remembered across reloads: a watcher that beeps and a screen that stays
+     on are settings, not per-session choices. */
+  sound: localStorage.getItem('sound') !== '0',
+  awake: localStorage.getItem('awake') === '1',
+  /* The big hover card is OFF by default. It fired on every pixel of mouse
+     movement and covered the price you were trying to read, which is the exact
+     opposite of what a crosshair is for. The crosshair itself is always on. */
+  details: localStorage.getItem('details') === '1',
+  cursor: null,          /* {px,py} while the pointer is over the chart */
+  symbol: BOOK.active,
+  tz: 'MYT',
+  tf: null,
+  start: 0, count: 160,
+  overlays: {ema:true, ut:true, vwap:false, trades:true, rail:true,
+             vol:true, rsi:false, macd:false, oi:false, mine:true,
+             sessions:true},
+  signalFilter: null,
+  /* Eleven lanes of triangles is unreadable as one picture. Hovering a lane
+     lifts it and pushes the rest back; clicking pins that so the mouse can go
+     back to the chart without losing it. */
+  railHover: null,
+  railPin: null,
+  selected: null,
+  selectedMine: null,
+  tradeSource: 'bt',      // bt | mine — which list the side panel shows
+  tradeChannel: 'all',    // all | rule | signal2..5 — which signal's trades
+  tradeOutcome: 'all',    // all | win | loss
+  tradeOrder: 'new',      // new | old
+  myFilter: 'all',        // all | win | loss — applies to the chart overlay
+  measureMode: false,
+  measure: null,     // {a:{i,p}, b:{i,p}}
+  follow: true,      // keep the newest bar in view as live data arrives
+  userMoved: false,  // a real mouse/key event has happened
+};
+
+/* Per-timeframe colour for the UT signal rail. Distinct hues so a glance tells
+   you WHICH timeframe flipped, and the strategy's own markers (triangles on the
+   price panel) can never be confused with them. */
+const TFC = {'5m':'#7D8590','15m':'#79C0FF','30m':'#58A6FF','1h':'#BC8CFF','4h':'#FF9E64'};
+
+/* Columns a live tick may overwrite. Kept in one place because the patcher has
+   to extend every one of them in lockstep or the arrays desynchronise. */
+const PATCH_KEYS = ['o','h','l','c','v','ema_7','ema_14','ema_28','ut_level',
+                    'vwap','rsi_14','atr_14','macd','macd_signal','macd_hist',
+                    'oi'];
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const tip = document.getElementById('tip');
+
+function defaultTf(){
+  const d = DATA;
+  return (d.strategy_timeframe && d.series[d.strategy_timeframe])
+    ? d.strategy_timeframe : d.timeframes[0];
+}
+function S(){ const s = DATA.series[state.tf]; return s || DATA.series[defaultTf()]; }
+function barTime(s,i){ return s.t ? s.t[i] : s.t0 + i*s.step; }
+function timeToIndex(s,ms){
+  if(s.t){ let lo=0,hi=s.n-1,best=-1;
+    while(lo<=hi){const m=(lo+hi)>>1; if(s.t[m]<=ms){best=m;lo=m+1}else hi=m-1}
+    return best; }
+  return Math.floor((ms - s.t0)/s.step);
+}
+/* ---------- time zones ------------------------------------------------------
+   Everything on disk is epoch milliseconds UTC — that never changes, and none of
+   the maths below touches a timezone. This is display only.
+
+   New York is given as an IANA zone, NOT a fixed offset: it is UTC-4 in summer
+   and UTC-5 in winter, so a hardcoded offset would silently be an hour wrong for
+   about four months of the year. Malaysia has no DST but is written the same way
+   for consistency. */
+const TZS = {
+  MYT: {zone:'Asia/Kuala_Lumpur', label:'MYT'},
+  NY:  {zone:'America/New_York',  label:'NY'},
+  UTC: {zone:'UTC',               label:'UTC'},
+};
+const _tzFmt = {};
+function tzParts(ms, key){
+  if(!_tzFmt[key]) _tzFmt[key] = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TZS[key].zone, hourCycle:'h23',
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit'});
+  return _tzFmt[key].format(new Date(ms)).replace(',', '');
+}
+const _tzAbbr = {};
+function tzAbbr(ms, key){
+  /* EDT vs EST — worth showing, because "09:30 NY" means a different UTC time
+     in July than in January and this chart spans both. */
+  if(!_tzAbbr[key]) _tzAbbr[key] = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZS[key].zone, timeZoneName:'short'});
+  const p = _tzAbbr[key].formatToParts(new Date(ms))
+    .find(x => x.type === 'timeZoneName');
+  return p ? p.value : TZS[key].label;
+}
+/* The active zone, for axis ticks and lists. Always rendered with its label
+   attached somewhere visible — an unlabelled timestamp on a chart that can show
+   three zones is a way to misread a trade by eight hours. */
+const fmtT  = ms => tzParts(ms, state.tz) + ' ' + TZS[state.tz].label;
+const fmtTs = ms => tzParts(ms, state.tz);          // bare, for dense places
+const fmtN = (v,d=2) => v==null||isNaN(v) ? '-' : v.toLocaleString(undefined,
+             {minimumFractionDigits:d,maximumFractionDigits:d});
+function fmtDur(ms){
+  const m = Math.round(Math.abs(ms)/60000);
+  const d = Math.floor(m/1440), h = Math.floor((m%1440)/60), mm = m%60;
+  if(d) return `${d}d ${h}h`;
+  if(h) return `${h}h ${String(mm).padStart(2,'0')}m`;
+  return `${mm}m`;
+}
+/* Prices carry a symbol's own scale: gold moves in tenths, BTC in hundreds.
+   Decimals follow the instrument so a BTC readout is not padded with noise and
+   a gold one is not truncated to uselessness. */
+function priceDp(){
+  const s = S(); if(!s) return 2;
+  const p = Math.abs(s.c[Math.min(s.n-1, Math.max(0,Math.floor(state.start)))] || 1000);
+  return p >= 10000 ? 1 : p >= 100 ? 2 : p >= 1 ? 3 : 5;
+}
+
+/* ---------- trades indexed onto the current timeframe ---------- */
+function visibleTrades(){
+  return DATA.trades.filter(t => !state.signalFilter || t.signal===state.signalFilter);
+}
+
+/* ---------- drawing ---------- */
+function resize(){
+  const r = document.getElementById('chart').getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.floor(r.width*dpr));
+  cv.height = Math.max(1, Math.floor(r.height*dpr));
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  draw();
+}
+
+/* Panel layout is recomputed each draw so toggling a pane reflows the rest. */
+function layout(H){
+  const padT=8, padB=26;
+  /* Lanes: one per timeframe, plus the strategy's signals and your own fills
+     when either exists. Counted here so toggling a symbol with no imported
+     trades does not leave an empty stripe. */
+const railLanes = DATA.timeframes.length
+       + (DATA.trades.length ? 1 : 0)
+       + ((DATA.signal2||[]).length ? 1 : 0)
+       + ((DATA.signal3||[]).length ? 1 : 0)
+       + ((DATA.signal4||[]).length ? 1 : 0)
+       + ((DATA.signal5||[]).length ? 1 : 0)
+       + ((DATA.signal7||[]).length ? 1 : 0)
+      + ((DATA.my_trades||[]).length ? 1 : 0);
+  const railH = state.overlays.rail ? railLanes*13 + 10 : 0;
+  const volH  = state.overlays.vol  ? 56 : 0;
+  const rsiH  = state.overlays.rsi  ? 60 : 0;
+  const macdH = state.overlays.macd ? 66 : 0;
+  /* No pane when this timeframe has no OI: 5m bars are finer than the 15m grid
+     OI is published on, and a reserved empty stripe would read as "OI is flat"
+     rather than "OI is not sampled this fine". */
+  const oiH   = (state.overlays.oi && hasOI()) ? 64 : 0;
+  const lower = railH+volH+rsiH+macdH+oiH;
+  const priceH = Math.max(120, H-padT-padB-lower);
+  let yy = padT;
+  const P = {price:{y:yy,h:priceH}}; yy+=priceH;
+  P.rail = {y:yy,h:railH}; yy+=railH;
+  P.vol  = {y:yy,h:volH};  yy+=volH;
+  P.rsi  = {y:yy,h:rsiH};  yy+=rsiH;
+  P.macd = {y:yy,h:macdH}; yy+=macdH;
+  P.oi   = {y:yy,h:oiH};
+  P.padT=padT; P.padB=padB;
+  return P;
+}
+
+/* Does the CURRENT timeframe carry open interest? `_attach_oi` sends null
+   rather than a forward fill for timeframes finer than the 15m grid Bybit
+   publishes OI on -- repeating one reading across three 5m bars would draw a
+   flat line indistinguishable from genuinely flat OI. */
+function hasOI(){ const s=S(); return !!(s && s.oi); }
+
+/* The mean the RISK ENGINE actually measures deviation against: the last
+   OI_BASELINE_BARS (96) points of the 15m series, whatever timeframe is on
+   screen. Drawn as the pane's dashed reference so the number feeding Danger%
+   is visible rather than merely described. Falls back to the visible mean when
+   15m is not in the payload. */
+function oiBaseline(){
+  const src = (DATA.series['15m'] && DATA.series['15m'].oi) || null;
+  if(!src) return null;
+  const v=[];
+  for(let i=src.length-1; i>=0 && v.length<96; i--) if(src[i]!=null) v.push(src[i]);
+  if(v.length < 8) return null;      /* too few points to call it a baseline */
+  return v.reduce((a,b)=>a+b,0)/v.length;
+}
+
+const PADL = 6, PADR = 62;
+/* Fraction of the visible window kept clear beyond the newest bar. */
+const RIGHT_GAP_FRAC = 0.18;
+/* Where "Now" parks the view: the newest bar sits at the left edge of that gap. */
+function liveStart(s){
+  return Math.max(0, s.n - state.count + Math.round(state.count * RIGHT_GAP_FRAC));
+}
+let VIEW = null;   /* last frame's index<->pixel mapping, for hit-testing */
+
+function draw(){
+  const s = S(); if(!s) return;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  const dp = priceDp();
+  ctx.fillStyle = C.bg; ctx.fillRect(0,0,W,H);
+
+  state.count = Math.max(20, Math.min(state.count, s.n));
+  /* Empty room to the RIGHT of the newest bar. Without it the live edge is
+     pinned under the price axis with nowhere to breathe, and the bars you most
+     want to read are the ones hardest to see. Panning may run into that room and
+     stop there — never past it, so the chart cannot be scrolled into blankness. */
+  const gap = Math.round(state.count * RIGHT_GAP_FRAC);
+  state.start = Math.max(0, Math.min(state.start, s.n - state.count + gap));
+  const i0 = Math.floor(state.start), i1 = Math.min(s.n, i0 + Math.ceil(state.count));
+  const P = layout(H);
+
+  let hi = -Infinity, lo = Infinity;
+  for(let i=i0;i<i1;i++){
+    if(s.h[i]!=null) hi=Math.max(hi,s.h[i]);
+    if(s.l[i]!=null) lo=Math.min(lo,s.l[i]);
+    if(state.overlays.ut && s.ut_level[i]!=null){
+      hi=Math.max(hi,s.ut_level[i]); lo=Math.min(lo,s.ut_level[i]); }
+    if(state.overlays.vwap && s.vwap[i]!=null){
+      hi=Math.max(hi,s.vwap[i]); lo=Math.min(lo,s.vwap[i]); }
+  }
+  if(!isFinite(hi)||!isFinite(lo)) return;
+  const pad=(hi-lo)*0.08||1; hi+=pad; lo-=pad;
+
+  /* Bar width comes from the WINDOW, not from how much data happens to be in
+     it. Dividing by (i1-i0) made the bars stretch to fill the pane whenever the
+     window ran past the newest bar, which silently ate the right-hand room the
+     clamp had just created. Anchoring on `state.start` (a float) rather than
+     `i0` (its floor) also makes panning smooth instead of snapping bar to bar,
+     and makes `x` and `xToI` exact inverses of each other. */
+  const cw = (W-PADL-PADR)/state.count;
+  const x = i => PADL + (i-state.start)*cw + cw/2;
+  const y = p => P.price.y + (hi-p)/(hi-lo)*P.price.h;
+  VIEW = {i0,i1,cw,hi,lo,P,W,H,
+          x, y,
+          xToI: px => state.start + (px-PADL)/cw - 0.5,
+          yToP: py => hi - (py-P.price.y)/P.price.h*(hi-lo)};
+
+  ctx.font='11px ui-sans-serif,system-ui,sans-serif';
+
+  /* grid + price axis */
+  ctx.strokeStyle=C.grid; ctx.fillStyle=C.axis; ctx.lineWidth=1; ctx.textAlign='left';
+  for(let k=0;k<=5;k++){
+    const p = lo + (hi-lo)*k/5, yy = Math.round(y(p))+0.5;
+    ctx.beginPath(); ctx.moveTo(PADL,yy); ctx.lineTo(W-PADR,yy); ctx.stroke();
+    ctx.fillText(fmtN(p,dp), W-PADR+6, yy+3);
+  }
+  /* time axis, spanning every panel */
+  ctx.textAlign='center';
+  const ticks = Math.min(7, i1-i0);
+  for(let k=0;k<ticks;k++){
+    const i = i0 + Math.floor((i1-i0-1)*k/Math.max(1,ticks-1));
+    const xx = Math.round(x(i))+0.5;
+    ctx.strokeStyle=C.grid; ctx.beginPath();
+    ctx.moveTo(xx,P.padT); ctx.lineTo(xx,H-P.padB); ctx.stroke();
+    ctx.fillStyle=C.axis;
+    ctx.fillText(fmtTs(barTime(s,i)), xx, H-P.padB+15);
+  }
+  /* Name the zone on the axis itself. */
+  ctx.textAlign='left'; ctx.fillStyle=C.axis;
+  ctx.fillText(TZS[state.tz].label, W-PADR+6, H-P.padB+15);
+
+  /* candles. The forming bar is drawn hollow so a live price can never be
+     mistaken for a closed bar — the same CONFIRMED/LIVE split the engine keeps. */
+  const bw = Math.max(1, Math.min(cw*0.66, 18));
+  const formingIdx = s.forming_t!=null ? timeToIndex(s, s.forming_t) : -1;
+  for(let i=i0;i<i1;i++){
+    if(s.c[i]==null) continue;
+    const up = s.c[i] >= s.o[i];
+    ctx.strokeStyle = ctx.fillStyle = up ? C.up : C.down;
+    const xx = x(i);
+    ctx.beginPath(); ctx.moveTo(xx, y(s.h[i])); ctx.lineTo(xx, y(s.l[i]));
+    ctx.lineWidth = Math.max(1, bw*0.14); ctx.stroke();
+    const top=y(Math.max(s.o[i],s.c[i])), bot=y(Math.min(s.o[i],s.c[i]));
+    if(i===formingIdx){
+      ctx.lineWidth=1.2;
+      ctx.strokeRect(xx-bw/2+0.5, top+0.5, bw-1, Math.max(1, bot-top)-1);
+    } else {
+      ctx.fillRect(xx-bw/2, top, bw, Math.max(1, bot-top));
+    }
+  }
+
+  /* overlays */
+  const line=(key,col,w)=>{
+    ctx.strokeStyle=col; ctx.lineWidth=w; ctx.beginPath(); let started=false;
+    for(let i=i0;i<i1;i++){
+      const v=s[key][i]; if(v==null){started=false;continue}
+      if(!started){ctx.moveTo(x(i),y(v));started=true} else ctx.lineTo(x(i),y(v));
+    }
+    ctx.stroke();
+  };
+  if(state.overlays.ema){ line('ema_7',C.ema7,1.4); line('ema_14',C.ema14,1.4); line('ema_28',C.ema28,1.4); }
+  if(state.overlays.vwap) line('vwap',C.vwap,1.6);
+  if(state.overlays.ut) line('ut_level',C.gold,2);
+
+  /* --- this timeframe's OWN UT crosses, marked at the UT level --- */
+  if(state.overlays.ut){
+    const mark=(idxList,up)=>{
+      ctx.fillStyle = up? C.up : C.down;
+      for(const i of idxList){
+        if(i<i0||i>=i1) continue;
+        const lvl = s.ut_level[i]; if(lvl==null) continue;
+        const xx=x(i), yy=y(lvl);
+        ctx.beginPath(); ctx.arc(xx,yy,3.5,0,6.283); ctx.fill();
+        ctx.strokeStyle=C.bg; ctx.lineWidth=1; ctx.stroke();
+      }
+    };
+    mark(s.ut_buy,true); mark(s.ut_sell,false);
+  }
+
+  /* --- session liquidity lines ------------------------------------------
+     The intraday framework's own levels: Asia high/low (gold), yesterday's
+     extremes (orange = whole day, purple = US session). Dashed, so they can
+     never be mistaken for the UT trailing stop or a moving average — these
+     are places liquidity pooled, not indicators. Drawn from the start of the
+     MYT day the map describes, and only when the fast feed is supplying one
+     (a static report has no session map to draw). */
+  if(state.overlays.sessions && lastSessions && !lastSessions.error){
+    const lv = lastSessions.levels||{};
+    const off = 8*3600000;   /* MYT = UTC+8, no DST */
+    const dayMs = Math.floor(((lastSessions.as_of_ms||Date.now())+off)/86400000)*86400000-off;
+    const from = Math.max(i0, timeToIndex(s, dayMs));
+    const SESSLINES = [
+      ['asia_high', C.gold,  'Asia H'], ['asia_low', C.gold,  'Asia L'],
+      ['prev_day_high', C.ema28, 'PD H'], ['prev_day_low', C.ema28, 'PD L'],
+      ['prev_us_high',  C.ema14, 'PUS H'], ['prev_us_low', C.ema14, 'PUS L'],
+    ];
+    ctx.setLineDash([5,4]);
+    ctx.textAlign='left'; ctx.font='10px ui-sans-serif,system-ui,sans-serif';
+    for(const [k,col,lab] of SESSLINES){
+      const v = lv[k];
+      if(v==null || v>hi || v<lo) continue;
+      const yy = Math.round(y(v))+0.5;
+      ctx.strokeStyle=col; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(x(from),yy); ctx.lineTo(x(i1-1),yy); ctx.stroke();
+      ctx.fillStyle=col;
+      ctx.fillText(`${lab} ${fmtN(v,dp)}`, PADL+4, yy-3);
+    }
+    ctx.setLineDash([]);
+    ctx.font='11px ui-sans-serif,system-ui,sans-serif';
+  }
+
+  /* --- multi-timeframe UT signal rail ------------------------------------
+     One lane per timeframe. This is the confluence view: 4H, 1H and 15m
+     flipping together is different information from any one of them alone,
+     and it is invisible if you can only look at one chart at a time. */
+  if(state.overlays.rail && P.rail.h){
+    const lane = 13;
+    const tA=barTime(s,i0), tB=barTime(s,i1-1)+s.step;
+    const laneAt = k => P.rail.y + 6 + k*lane;
+    const rule = (yy, label, col, on)=>{
+      ctx.strokeStyle = on ? C.axis : C.grid; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(PADL,yy+lane/2); ctx.lineTo(W-PADR,yy+lane/2); ctx.stroke();
+      ctx.fillStyle = col; ctx.textAlign='left';
+      if(on) ctx.font = 'bold ' + ctx.font;
+      ctx.fillText(label, W-PADR+6, yy+lane/2+3);
+      if(on) ctx.font = ctx.font.replace('bold ','');
+    };
+
+    /* Eleven lanes of triangles is a wall, not a picture. One lane at a time is
+       readable, so hovering lifts a lane and pushes the rest to 13% alpha, and
+       clicking pins that. The lane geometry is recorded as it is drawn -- the
+       lanes are conditional (a symbol with no `my_trades` has no `mine` lane),
+       so hit-testing against a recomputed layout would drift the moment one of
+       them was absent. */
+    RAIL_LANES = [];
+    const hot = state.railPin || state.railHover;
+    const laneBlock = (key, label, col, body)=>{
+      const yy = laneAt(k++);
+      RAIL_LANES.push({key, label, col, y: yy, h: lane});
+      const on = hot === key;
+      if(on){ ctx.fillStyle = C.laneHi; ctx.fillRect(PADL, yy, W-PADL, lane); }
+      ctx.globalAlpha = (hot && !on) ? 0.13 : 1;
+      rule(yy, label, col, on);
+      body(yy);
+      ctx.globalAlpha = 1;
+    };
+    /* Solid tick = up/buy, hollow = down/sell, so the two read apart at a glance
+       even where they land on adjacent bars. */
+    const put = (yy, times, up, col, hollow)=>{
+      for(const ms of times){
+        if(ms<tA||ms>=tB) continue;
+        const bi = timeToIndex(s,ms);
+        if(bi<i0||bi>=i1) continue;
+        const xx = x(bi), cy = yy+lane/2;
+        ctx.beginPath();
+        if(up){ ctx.moveTo(xx,cy-4); ctx.lineTo(xx-3.5,cy+3); ctx.lineTo(xx+3.5,cy+3); }
+        else  { ctx.moveTo(xx,cy+4); ctx.lineTo(xx-3.5,cy-3); ctx.lineTo(xx+3.5,cy-3); }
+        ctx.closePath();
+        if(hollow){ ctx.strokeStyle=col; ctx.lineWidth=1.3; ctx.stroke(); }
+        else { ctx.fillStyle=col; ctx.fill(); }
+      }
+    };
+
+    let k = 0;
+    /* --- one lane per timeframe: that timeframe's own UT flips --- */
+    DATA.timeframes.forEach(tf=>{
+      laneBlock(tf, tf, TFC[tf]||C.axis, yy=>{
+        const ev = DATA.ut_events[tf]; if(!ev) return;
+        put(yy, ev.buy,  true,  C.up,   false);
+        put(yy, ev.sell, false, C.down, false);
+      });
+    });
+
+    /* --- the strategy's own entries and exits, on the same axis ---
+       The rail answered "which timeframes agreed"; it could not answer "and did
+       the strategy actually take it". Now both are one glance apart. */
+    if(DATA.trades.length){
+      laneBlock('rule', 'signal', C.gold, yy=>{
+        const shown = visibleTrades();
+        put(yy, shown.map(t=>t.entry_time), true,  C.gold, false);
+        put(yy, shown.filter(t=>t.exit_time!=null).map(t=>t.exit_time), false, C.gold, true);
+      });
+    }
+
+    /* --- signal 2: the mined pattern, its own lane ---
+       Deliberately below the strategy's lane and in a different colour, because
+       it is a different KIND of thing: the lane above is the measured system,
+       this one is a pattern fitted to three months anyway. Down-triangles,
+       colour is the OUTCOME (win green / loss red / unresolved grey), which is
+       the whole reason to want it here -- a lane of entry marks tells you it
+       fired, a lane of outcomes tells you whether firing meant anything. */
+    if((DATA.signal2||[]).length){
+      laneBlock('signal2', 'signal2', '#E8873B', yy=>{
+        const s2 = DATA.signal2;
+        put(yy, s2.filter(t=>t.reason==='tp').map(t=>t.entry_time),   false, C.up,   false);
+        put(yy, s2.filter(t=>t.reason==='sl').map(t=>t.entry_time),   false, C.down, false);
+        put(yy, s2.filter(t=>t.reason==='timeout'||!t.resolved)
+                  .map(t=>t.entry_time),                             false, C.axis, true);
+      });
+    }
+    /* --- signal 3: the double-sweep/fake-break reversal, BOTH directions ---
+       Each marker points the way THAT trade went, read off the row's own
+       side: sweep-low = long (up), fake-break-high = short (down). It was
+       drawn all-up from its long-only mining days, which read as "every
+       signal3 buys" once the short side shipped. Colour stays the outcome. */
+    if((DATA.signal3||[]).length){
+      laneBlock('signal3', 'signal3', '#56D4DD', yy=>{
+        const s3 = DATA.signal3;
+        const up3 = t => (t.side ? t.side==='long' : t.tp > t.entry_price);
+        const one3 = (t, col, hollow) => put(yy, [t.entry_time], up3(t), col, hollow);
+        s3.filter(t=>t.reason==='tp').forEach(t=>one3(t, C.up,   false));
+        s3.filter(t=>t.reason==='sl').forEach(t=>one3(t, C.down, false));
+        s3.filter(t=>t.reason==='timeout'||!t.resolved).forEach(t=>one3(t, C.axis, true));
+      });
+    }
+
+    /* --- signal 4: the weekly refit. Direction comes from the config, so the
+       triangle points whichever way this week's pattern trades. --- */
+    if((DATA.signal4||[]).length){
+      laneBlock('signal4', 'signal4', '#BC8CFF', yy=>{
+        const s4 = DATA.signal4;
+        const up = (DATA.signal4_side||'long') === 'long';
+        put(yy, s4.filter(t=>t.reason==='tp').map(t=>t.entry_time), up, C.up,   false);
+        put(yy, s4.filter(t=>t.reason==='sl').map(t=>t.entry_time), up, C.down, false);
+        put(yy, s4.filter(t=>t.reason==='timeout'||!t.resolved)
+                 .map(t=>t.entry_time),                            up, C.axis, true);
+      });
+    }
+    /* --- signal 5: FAST-C, short only, already capped at 3 concurrent by the
+       payload builder so what is drawn is what could actually have been taken. --- */
+    if((DATA.signal5||[]).length){
+      laneBlock('signal5', 'signal5', '#56D4DD', yy=>{
+        const s5 = DATA.signal5;
+        put(yy, s5.filter(t=>t.reason==='tp').map(t=>t.entry_time), false, C.up,   false);
+        put(yy, s5.filter(t=>t.reason==='sl').map(t=>t.entry_time), false, C.down, false);
+        put(yy, s5.filter(t=>t.reason==='timeout'||!t.resolved)
+                 .map(t=>t.entry_time),                            false, C.axis, true);
+      });
+    }
+    /* --- signal 6: the session framework. Both directions, so each marker
+       points the way THAT trade went -- read off the row's own brackets. --- */
+    /* --- signal 7: the ExpD regime gate, walk-forward history. Same
+       marker language as 6; the lane is the forward-record preview. --- */
+    if((DATA.signal7||[]).length){
+      laneBlock('signal7', 'signal7', '#39D3C3', yy=>{
+        const s7 = DATA.signal7;
+        const isLong = t => t.tp > t.entry_price;
+        const one = (t, col, hollow) => put(yy, [t.entry_time], isLong(t), col, hollow);
+        s7.filter(t=>t.reason==='tp').forEach(t=>one(t, C.up, false));
+        s7.filter(t=>t.reason==='sl').forEach(t=>one(t, C.down, false));
+        s7.filter(t=>t.reason==='timeout'||!t.resolved).forEach(t=>one(t, C.axis, true));
+      });
+    }
+
+    /* --- your real fills --- */
+    const mine = myTrades();
+    if(mine.length){
+      laneBlock('mine', 'mine', C.mine, yy=>{
+        put(yy, mine.filter(t=>t.side==='buy').map(t=>t.entry_time),  true,  C.mine, false);
+        put(yy, mine.filter(t=>t.side!=='buy').map(t=>t.entry_time), false, C.mine, false);
+        put(yy, mine.filter(t=>t.exit_time!=null).map(t=>t.exit_time), false, C.mine, true);
+      });
+    }
+  }
+
+  /* --- volume --- */
+  if(state.overlays.vol && P.vol.h){
+    let vmax=0; for(let i=i0;i<i1;i++) if(s.v[i]!=null) vmax=Math.max(vmax,s.v[i]);
+    if(vmax>0){
+      const base=P.vol.y+P.vol.h-2;
+      ctx.globalAlpha=0.55;
+      for(let i=i0;i<i1;i++){
+        if(s.v[i]==null) continue;
+        const hgt=(s.v[i]/vmax)*(P.vol.h-6);
+        ctx.fillStyle = (s.c[i]>=s.o[i]? C.up : C.down);
+        ctx.fillRect(x(i)-bw/2, base-hgt, bw, hgt);
+      }
+      ctx.globalAlpha=1;
+      ctx.fillStyle=C.axis; ctx.textAlign='left';
+      ctx.fillText('vol', W-PADR+6, P.vol.y+12);
+    }
+  }
+
+  /* --- RSI --- */
+  if(state.overlays.rsi && P.rsi.h){
+    const ry = v => P.rsi.y+4 + (100-v)/100*(P.rsi.h-10);
+    ctx.strokeStyle=C.grid; ctx.setLineDash([3,3]);
+    for(const lv of [30,50,70]){
+      const yy=Math.round(ry(lv))+0.5;
+      ctx.beginPath(); ctx.moveTo(PADL,yy); ctx.lineTo(W-PADR,yy); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.strokeStyle='#E3B341'; ctx.lineWidth=1.3; ctx.beginPath();
+    let st=false;
+    for(let i=i0;i<i1;i++){
+      const v=s.rsi_14[i]; if(v==null){st=false;continue}
+      if(!st){ctx.moveTo(x(i),ry(v));st=true} else ctx.lineTo(x(i),ry(v));
+    }
+    ctx.stroke();
+    ctx.fillStyle=C.axis; ctx.textAlign='left';
+    ctx.fillText('RSI '+fmtN(s.rsi_14[i1-1],0), W-PADR+6, P.rsi.y+12);
+  }
+
+  /* --- MACD (backtest-only: the app has no MACD) --- */
+  if(state.overlays.macd && P.macd.h){
+    let m=0;
+    for(let i=i0;i<i1;i++)
+      for(const k of ['macd','macd_signal','macd_hist'])
+        if(s[k][i]!=null) m=Math.max(m,Math.abs(s[k][i]));
+    if(m>0){
+      const my = v => P.macd.y+4 + (m-v)/(2*m)*(P.macd.h-10);
+      const zero=Math.round(my(0))+0.5;
+      ctx.strokeStyle=C.grid; ctx.beginPath();
+      ctx.moveTo(PADL,zero); ctx.lineTo(W-PADR,zero); ctx.stroke();
+      ctx.globalAlpha=0.5;
+      for(let i=i0;i<i1;i++){
+        const hv=s.macd_hist[i]; if(hv==null) continue;
+        ctx.fillStyle = hv>=0? C.up : C.down;
+        const yv=my(hv);
+        ctx.fillRect(x(i)-bw/2, Math.min(yv,zero), bw, Math.abs(yv-zero));
+      }
+      ctx.globalAlpha=1;
+      const mline=(key,col)=>{
+        ctx.strokeStyle=col; ctx.lineWidth=1.3; ctx.beginPath(); let q=false;
+        for(let i=i0;i<i1;i++){
+          const v=s[key][i]; if(v==null){q=false;continue}
+          if(!q){ctx.moveTo(x(i),my(v));q=true} else ctx.lineTo(x(i),my(v));
+        }
+        ctx.stroke();
+      };
+      mline('macd',C.ema7); mline('macd_signal',C.ema28);
+      ctx.fillStyle=C.axis; ctx.textAlign='left';
+      ctx.fillText('MACD', W-PADR+6, P.macd.y+12);
+    }
+  }
+
+  /* --- open interest --- */
+  if(state.overlays.oi && P.oi.h && s.oi){
+    let lo=Infinity, hi=-Infinity;
+    for(let i=i0;i<i1;i++){ const v=s.oi[i]; if(v==null) continue;
+      if(v<lo)lo=v; if(v>hi)hi=v; }
+    const base = oiBaseline();
+    /* Keep the baseline on screen when it is near the window, so "OI is above
+       its baseline" is readable. Do NOT stretch to reach a far-away baseline --
+       that would flatten the line this pane exists to show. */
+    if(base!=null && lo<Infinity && base>lo-(hi-lo||1)*2 && base<hi+(hi-lo||1)*2){
+      lo=Math.min(lo,base); hi=Math.max(hi,base);
+    }
+    if(lo<Infinity){
+      const pad=(hi-lo)*0.12 || Math.max(1,Math.abs(hi)*0.001);
+      const oy = v => P.oi.y+4 + (hi+pad-v)/((hi-lo)+2*pad)*(P.oi.h-10);
+      if(base!=null){
+        const by=Math.round(oy(base))+0.5;
+        if(by>P.oi.y && by<P.oi.y+P.oi.h){
+          ctx.strokeStyle=C.grid; ctx.setLineDash([4,4]);
+          ctx.beginPath(); ctx.moveTo(PADL,by); ctx.lineTo(W-PADR,by); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+      ctx.strokeStyle='#56D4DD'; ctx.lineWidth=1.4; ctx.beginPath();
+      let on=false;
+      for(let i=i0;i<i1;i++){
+        const v=s.oi[i];
+        if(v==null){on=false;continue}          /* a hole stays a hole */
+        if(!on){ctx.moveTo(x(i),oy(v));on=true} else ctx.lineTo(x(i),oy(v));
+      }
+      ctx.stroke();
+      let last=null;
+      for(let i=i1-1;i>=i0;i--) if(s.oi[i]!=null){last=s.oi[i];break}
+      ctx.fillStyle=C.axis; ctx.textAlign='left';
+      const dev = (last!=null && base) ? (last-base)/base*100 : null;
+      ctx.fillText('OI' + (dev==null ? '' :
+                   (dev>=0?' +':' ')+dev.toFixed(1)+'%'), W-PADR+6, P.oi.y+12);
+      if(last!=null) ctx.fillText(fmtN(last,0), W-PADR+6, P.oi.y+24);
+
+      /* Staleness, same idea as the KEY LEVELS "as of ... before" badge: compare
+         the newest bar that HAS an OI reading against the newest bar on screen.
+         A gap of one sync cycle (roughly one OI_INTERVAL) is normal and says
+         nothing; a gap of hours means the sync is stuck -- e.g. the watcher's
+         open-interest fetch can fail silently (logged at debug, not shown
+         anywhere) after Bybit rate-limits it, and candles keep updating on the
+         same cycle while OI quietly stops. Surfacing it here is what lets a
+         reader notice that WITHOUT reading the database. */
+      let lastOiT=null;
+      for(let i=s.n-1;i>=0;i--) if(s.oi[i]!=null){lastOiT=s.t0+i*s.step;break}
+      if(lastOiT!=null){
+        const newestT = s.t0+(s.n-1)*s.step;
+        const gap = newestT-lastOiT;
+        if(gap > 45*60000){
+          ctx.fillStyle=C.down; ctx.textAlign='right';
+          ctx.fillText(`OI stuck ${fmtDur(gap)}`, W-PADR-4, P.oi.y+P.oi.h-4);
+          ctx.textAlign='left';
+        }
+      }
+    }
+  }
+
+  /* trade markers */
+  if(state.overlays.trades){
+    for(const t of visibleTrades()){
+      const ei = timeToIndex(s, t.entry_time);
+      if(ei>=i0-1 && ei<i1+1){
+        const win = t.net>0;
+        const xx=x(ei), yy=y(t.entry_price);
+        ctx.fillStyle = ctx.strokeStyle = win? C.up : C.down;
+        ctx.globalAlpha = (state.selected===t.id)?1:0.85;
+        /* Triangle APEX sits exactly on (fill bar, fill price); the body hangs
+           below it so it never covers the price it is pointing at. */
+        ctx.beginPath();
+        ctx.moveTo(xx, yy);
+        ctx.lineTo(xx-6, yy+18); ctx.lineTo(xx+6, yy+18);
+        ctx.closePath(); ctx.fill();
+        /* A short rule at the fill price, so the exact level is readable and the
+           marker cannot be mistaken for "somewhere near this candle". */
+        ctx.lineWidth=1; ctx.beginPath();
+        ctx.moveTo(xx-Math.max(cw,10), yy); ctx.lineTo(xx+Math.max(cw,10), yy);
+        ctx.stroke();
+        if(state.selected===t.id){
+          ctx.strokeStyle='#fff'; ctx.lineWidth=1.5;
+          ctx.beginPath();
+          ctx.moveTo(xx, yy); ctx.lineTo(xx-6, yy+18);
+          ctx.lineTo(xx+6, yy+18); ctx.closePath(); ctx.stroke();
+        }
+        ctx.globalAlpha=1;
+      }
+      if(t.exit_time!=null){
+        const xi = timeToIndex(s, t.exit_time);
+        if(xi>=i0-1 && xi<i1+1){
+          ctx.strokeStyle = t.net>0? C.up : C.down;
+          ctx.lineWidth = state.selected===t.id?2:1;
+          const xx=x(xi), yy=y(t.exit_price);
+          ctx.beginPath(); ctx.moveTo(xx-5,yy-5); ctx.lineTo(xx+5,yy+5);
+          ctx.moveTo(xx+5,yy-5); ctx.lineTo(xx-5,yy+5); ctx.stroke();
+        }
+        /* entry->exit connector for the selected trade */
+        if(state.selected===t.id){
+          const a=timeToIndex(s,t.entry_time), b=timeToIndex(s,t.exit_time);
+          ctx.strokeStyle = t.net>0? C.up : C.down;
+          ctx.setLineDash([4,3]); ctx.lineWidth=1.2; ctx.beginPath();
+          ctx.moveTo(x(a),y(t.entry_price)); ctx.lineTo(x(b),y(t.exit_price));
+          ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+    }
+  }
+
+  if(state.overlays.mine) drawMyTrades(s, i0, i1, x, y, cw);
+
+  drawMeasure(s);
+  drawCrosshair(s, dp);
+}
+
+/* ---------- crosshair ------------------------------------------------------
+   The thing a plain mouse is for: where am I, and what price is that. Drawn
+   last so it sits over the candles, and snapped to the bar under the pointer on
+   the x axis while staying free on the y — you want the exact price your cursor
+   is at, not the bar's close. */
+function drawCrosshair(s, dp){
+  const c = state.cursor;
+  if(!c || !VIEW || state.measure) return;
+  const P = VIEW.P;
+  const inPrice = c.py >= P.price.y && c.py <= P.price.y + P.price.h;
+  if(c.px < PADL || c.px > VIEW.W - PADR) return;
+
+  const i = Math.round(VIEW.xToI(c.px));
+  const snapped = (i >= VIEW.i0 && i < VIEW.i1) ? VIEW.x(i) : c.px;
+
+  ctx.save();
+  ctx.setLineDash([3,3]);
+  ctx.strokeStyle = C.axis; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(Math.round(snapped)+0.5, P.price.y);
+  ctx.lineTo(Math.round(snapped)+0.5, VIEW.H - P.padB);
+  ctx.stroke();
+  if(inPrice){
+    ctx.beginPath();
+    ctx.moveTo(PADL, Math.round(c.py)+0.5);
+    ctx.lineTo(VIEW.W - PADR, Math.round(c.py)+0.5);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  /* Price tag on the axis, in the same place the axis labels already are, so
+     the eye does not have to move to read it. */
+  if(inPrice){
+    const p = VIEW.yToP(c.py);
+    const txt = fmtN(p, dp);
+    ctx.font = '11px ui-sans-serif,system-ui,sans-serif';
+    const w = ctx.measureText(txt).width + 10;
+    ctx.fillStyle = C.gold;
+    ctx.fillRect(VIEW.W - PADR + 2, c.py - 8, w, 16);
+    ctx.fillStyle = '#000'; ctx.textAlign = 'left';
+    ctx.fillText(txt, VIEW.W - PADR + 7, c.py + 3.5);
+  }
+
+  /* Time tag under the axis. Past the newest bar there is no bar to name, so it
+     says so instead of extrapolating a timestamp that does not exist. */
+  const yb = VIEW.H - P.padB;
+  let label;
+  if(i >= 0 && i < s.n) label = fmtTs(barTime(s, i)) + ' ' + TZS[state.tz].label;
+  else label = '—';
+  ctx.font = '11px ui-sans-serif,system-ui,sans-serif';
+  const tw = ctx.measureText(label).width + 12;
+  let tx = snapped - tw/2;
+  tx = Math.max(PADL, Math.min(tx, VIEW.W - PADR - tw));
+  ctx.fillStyle = C.gold;
+  ctx.fillRect(tx, yb + 3, tw, 16);
+  ctx.fillStyle = '#000'; ctx.textAlign = 'left';
+  ctx.fillText(label, tx + 6, yb + 14.5);
+  ctx.restore();
+}
+
+
+
+/* ---------- the measuring tool ----------------------------------------------
+   Anchors are stored in DATA coordinates (bar index + price), not pixels, so a
+   measurement survives panning, zooming and a live tick. */
+function measureStats(s){
+  const m = state.measure; if(!m || !m.b) return null;
+  const ia = Math.max(0, Math.min(s.n-1, Math.round(m.a.i)));
+  const ib = Math.max(0, Math.min(s.n-1, Math.round(m.b.i)));
+  const dPrice = m.b.p - m.a.p;
+  const pct = m.a.p ? dPrice / m.a.p * 100 : 0;
+  const bars = ib - ia;
+  const dMs = (barTime(s,ib) - barTime(s,ia));
+  /* ATR at the LEFT anchor: "how big is this move for this instrument" only
+     means something against the volatility that was known when it started. */
+  const atr = s.atr_14 ? s.atr_14[ia] : null;
+  return {
+    ia, ib, dPrice, pct, bars, dMs,
+    atrMult: (atr!=null && atr>0) ? dPrice/atr : null,
+    money: DATA.qty ? dPrice * DATA.qty : null,
+  };
+}
+function drawMeasure(s){
+  const m = state.measure; if(!m || !m.b || !VIEW) return;
+  const st = measureStats(s); if(!st) return;
+  const {x,y} = VIEW;
+  const x1=x(m.a.i), x2=x(m.b.i), y1=y(m.a.p), y2=y(m.b.p);
+  const up = st.dPrice >= 0;
+  const col = up ? C.up : C.down;
+
+  ctx.save();
+  ctx.fillStyle = (up ? 'rgba(46,189,133,0.13)' : 'rgba(246,70,93,0.13)');
+  ctx.fillRect(Math.min(x1,x2), Math.min(y1,y2), Math.abs(x2-x1), Math.abs(y2-y1));
+  ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([4,3]);
+  ctx.strokeRect(Math.min(x1,x2)+0.5, Math.min(y1,y2)+0.5,
+                 Math.abs(x2-x1), Math.abs(y2-y1));
+  ctx.setLineDash([]);
+  /* the vector itself, with an arrowhead at the moving end */
+  ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  const ang = Math.atan2(y2-y1, x2-x1);
+  ctx.fillStyle = col; ctx.beginPath();
+  ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-9*Math.cos(ang-0.4), y2-9*Math.sin(ang-0.4));
+  ctx.lineTo(x2-9*Math.cos(ang+0.4), y2-9*Math.sin(ang+0.4));
+  ctx.closePath(); ctx.fill();
+
+  const dp = priceDp();
+  const lines = [
+    `${st.dPrice>=0?'+':''}${fmtN(st.dPrice,dp)}   ${st.pct>=0?'+':''}${st.pct.toFixed(2)}%`,
+    `${Math.abs(st.bars)} bars   ${fmtDur(st.dMs)}`,
+  ];
+  if(st.atrMult!=null) lines.push(`${st.atrMult>=0?'+':''}${st.atrMult.toFixed(2)} x ATR14`);
+  if(st.money!=null)   lines.push(`${st.money>=0?'+':''}$${fmtN(Math.abs(st.money),2).replace('-','')} at qty ${DATA.qty}`);
+  lines.push(`${fmtTs(barTime(s,st.ia))}  ->  ${fmtTs(barTime(s,st.ib))}  ${TZS[state.tz].label}`);
+
+  ctx.font='11px ui-sans-serif,system-ui,sans-serif';
+  const wBox = Math.max(...lines.map(t=>ctx.measureText(t).width)) + 16;
+  const hBox = lines.length*14 + 10;
+  let bx = x2 + 12, by = y2 - hBox - 8;
+  if(bx + wBox > VIEW.W - PADR) bx = x2 - wBox - 12;
+  if(by < VIEW.P.padT) by = y2 + 12;
+  if(bx < PADL) bx = PADL;
+  ctx.fillStyle = '#161B22ee';
+  ctx.strokeStyle = col; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(bx, by, wBox, hBox, 6); ctx.fill(); ctx.stroke();
+  ctx.textAlign='left';
+  lines.forEach((t,k)=>{
+    ctx.fillStyle = k===0 ? col : C.text;
+    if(k>=2) ctx.fillStyle = C.muted;
+    ctx.fillText(t, bx+8, by+16+k*14);
+  });
+  ctx.restore();
+}
+
+/* ---------- your real fills ------------------------------------------------
+   Imported from a broker report (`data/mt5.py`) and drawn at the price you
+   actually got — never nudged toward the candles. The broker's contract is not
+   the exchange's, so a marker can sit slightly off; the header states by how
+   much, measured, rather than hiding it.
+
+   Shape carries direction (chevron up = buy, down = sell), outline carries
+   outcome (green = made money, red = lost). Hollow throughout, so it can never
+   be confused with the strategy's solid triangles. */
+function myTrades(){
+  return (DATA.my_trades || []).filter(t =>
+    state.myFilter === 'all' ? true :
+    state.myFilter === 'win' ? t.net > 0 : t.net <= 0);
+}
+
+function drawMyTrades(s, i0, i1, x, y, cw){
+  const list = myTrades(); if(!list.length) return;
+  for(const t of list){
+    const ei = timeToIndex(s, t.entry_time);
+    const win = t.net > 0;
+    const col = win ? C.up : C.down;
+    if(ei >= i0-1 && ei < i1+1){
+      const xx = x(ei), yy = y(t.entry_price);
+      const up = t.side === 'buy';
+      ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      /* A hollow chevron pointing the way the trade was taken. */
+      if(up){ ctx.moveTo(xx-6, yy+7); ctx.lineTo(xx, yy); ctx.lineTo(xx+6, yy+7); }
+      else  { ctx.moveTo(xx-6, yy-7); ctx.lineTo(xx, yy); ctx.lineTo(xx+6, yy-7); }
+      ctx.stroke();
+      if(state.selectedMine === t.id){
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(xx, yy, 9, 0, 6.283); ctx.stroke();
+      }
+    }
+    if(t.exit_time != null){
+      const xi = timeToIndex(s, t.exit_time);
+      if(xi >= i0-1 && xi < i1+1){
+        const xx = x(xi), yy = y(t.exit_price);
+        ctx.strokeStyle = col; ctx.lineWidth = 1.3;
+        ctx.beginPath(); ctx.arc(xx, yy, 3.2, 0, 6.283); ctx.stroke();
+      }
+      if(state.selectedMine === t.id){
+        const a = timeToIndex(s, t.entry_time), b = timeToIndex(s, t.exit_time);
+        ctx.strokeStyle = col; ctx.setLineDash([3,3]); ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x(a), y(t.entry_price)); ctx.lineTo(x(b), y(t.exit_price));
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+  }
+}
+
+/* Open-interest rows for the hover card.
+
+   OI alone says little; OI against PRICE over the same step is the read. The
+   four quadrants are the ones `analysis/context.py` reports to the AI brief,
+   worded the same way, so the chart and the brief cannot tell you different
+   stories about the same bar.
+
+   The step is deliberately the same bar for both axes -- comparing a 15-minute
+   OI move against a 4-hour price move is the easiest way to manufacture a
+   signal that is not there. */
+function oiQuadrant(dPx, dOi){
+  if(!dPx || !dOi) return null;
+  if(dPx>0 && dOi>0) return ['New longs opening', 'pos'];
+  if(dPx>0 && dOi<0) return ['Short covering', 'dim'];
+  if(dPx<0 && dOi>0) return ['New shorts opening', 'neg'];
+  return ['Long liquidation', 'dim'];
+}
+function oiRows(s, i){
+  if(!s.oi) return '';                      /* finer than the 15m OI grid */
+  const v = s.oi[i];
+  if(v == null) return '';                  /* a hole stays a hole */
+  let prev = null;
+  for(let k=i-1; k>=0 && k>=i-8; k--) if(s.oi[k]!=null){prev=s.oi[k];break}
+  let h = `<tr><td class="k">Open interest</td><td class="v">${fmtN(v,0)}</td></tr>`;
+  const base = oiBaseline();
+  if(base){
+    const dev = (v-base)/base*100;
+    h += `<tr><td class="k">vs engine baseline</td>`
+       + `<td class="v ${dev>=0?'pos':'neg'}">${dev>=0?'+':''}${dev.toFixed(1)}%</td></tr>`;
+  }
+  if(prev != null){
+    const d = v - prev;
+    const dPx = (s.c[i]!=null && s.o[i]!=null) ? s.c[i]-s.o[i] : 0;
+    h += `<tr><td class="k">&Delta;OI this bar</td>`
+       + `<td class="v ${d>=0?'pos':'neg'}">${d>=0?'+':''}${fmtN(d,0)}</td></tr>`;
+    const q = oiQuadrant(dPx, d);
+    if(q) h += `<tr><td class="k">&Delta;price &times; &Delta;OI</td>`
+             + `<td class="v ${q[1]}">${q[0]}</td></tr>`;
+  }
+  return h;
+}
+
+/* Trades whose ENTRY landed on this bar, for the hover card. */
+function myTradesOn(s, i){
+  return myTrades().filter(t => timeToIndex(s, t.entry_time) === i);
+}
+
+/* ---------- the hover card ---------------------------------------------------
+   A reproduction of the app's TECHNICAL STATE and KEY LEVELS panels for the bar
+   under the cursor, so history can be read the way the dashboard reads the
+   present.
+
+   Two honesty constraints:
+
+   * TECHNICAL STATE is for the timeframe on screen — the app labels its card
+     with a timeframe for the same reason.
+   * KEY LEVELS is **market-wide and on the H1 grid**: the app builds zones from
+     M30+H1+H4 swings plus H1 session levels and splits them with the H1 CONFIRMED
+     close, whatever chart you are looking at. So on a 5m chart the card can be up
+     to an hour old, and it says so rather than pretending otherwise.
+*/
+const ALIGN = {1:['Bullish','pos'], '-1':['Bearish','neg'], 2:['Mixed','muted'],
+               0:['—','dim']};
+
+function zoneIdxFor(barOpenMs, tfStep){
+  const Z = DATA.zones; if(!Z) return -1;
+  /* As-of-CLOSED: the newest H1 bar that had finished by the time this bar
+     finished. A bar cannot have seen a snapshot taken after it closed. */
+  const barClose = barOpenMs + tfStep;
+  if(Z.t){
+    let lo=0, hi=Z.n-1, best=-1;
+    while(lo<=hi){ const m=(lo+hi)>>1;
+      if(Z.t[m] + Z.step <= barClose){best=m;lo=m+1} else hi=m-1; }
+    return best;
+  }
+  const k = Math.floor((barClose - Z.t0 - Z.step)/Z.step);
+  return Math.max(-1, Math.min(Z.n-1, k));
+}
+
+function zoneLine(z, cls, tag, dp, price, atr){
+  const [lo,hi,strength,src] = z;
+  const range = (lo===hi) ? fmtN(lo,dp) : `${fmtN(lo,dp)} – ${fmtN(hi,dp)}`;
+  /* Distance from THIS bar's close to the nearest edge, in ATR — the alert
+     layer's own "at a zone" measure, and the number worth acting on. */
+  let away = '';
+  if(atr>0 && price!=null){
+    const d = price < lo ? lo-price : price > hi ? price-hi : 0;
+    away = d===0 ? 'inside' : `${(d/atr).toFixed(1)} ATR`;
+  }
+  return `<div class="lvl ${cls}"><span class="tag">${tag}</span>`
+       + `<span>${range}</span></div>`
+       + (away ? `<div class="also">${away} away · strength ${strength.toFixed(1)}</div>` : '');
+}
+
+function buildTip(s, i, hit){
+  const dp = priceDp();
+  const ms = barTime(s,i);
+  const forming = s.forming_t!=null && timeToIndex(s,s.forming_t)===i;
+  const close = s.c[i];
+  const num = (v,d=dp) => v==null||isNaN(v) ? '—' : fmtN(v,d);
+  let h = '';
+
+  h += `<div class="when"><b>${tzParts(ms,'MYT')}</b> MYT<br>`
+     + `${tzParts(ms,'NY')} ${tzAbbr(ms,'NY')} &middot; ${tzParts(ms,'UTC')} UTC`
+     + (forming ? `<br><span class="stale">forming bar — no signals</span>` : '')
+     + `</div>`;
+
+  h += `<table><tr><td class="k">O</td><td class="v">${num(s.o[i])}</td>`
+     + `<td class="k" style="padding-left:14px">H</td><td class="v">${num(s.h[i])}</td></tr>`
+     + `<tr><td class="k">L</td><td class="v">${num(s.l[i])}</td>`
+     + `<td class="k" style="padding-left:14px">C</td><td class="v">${num(close)}</td></tr></table>`;
+
+  /* ---- TECHNICAL STATE (this timeframe) ---- */
+  const utLvl = s.ut_level[i];
+  const utBias = (close!=null && utLvl!=null)
+    ? (close > utLvl ? ['Bullish','pos'] : ['Bearish','neg']) : ['—','dim'];
+  const al = ALIGN[String(s.ema_alignment ? s.ema_alignment[i] : 0)] || ALIGN[0];
+  const vw = s.vwap[i];
+  const vwState = (close!=null && vw!=null)
+    ? (close >= vw ? ['Above','pos'] : ['Below','neg']) : ['—','dim'];
+  const rv = s.relative_volume ? s.relative_volume[i] : null;
+
+  h += `<h4>Technical state &middot; ${state.tf}</h4><table>`
+     + `<tr><td class="k">UT Dynamic Level</td><td class="v ${utBias[1]}">${utBias[0]}</td></tr>`
+     + `<tr><td class="k">EMA 7/14/28</td><td class="v ${al[1]}">${al[0]}</td></tr>`
+     + `<tr><td class="k">RSI</td><td class="v">${num(s.rsi_14[i],0)}</td></tr>`
+     + `<tr><td class="k">ADX</td><td class="v">${num(s.adx_14?s.adx_14[i]:null,0)}</td></tr>`
+     + `<tr><td class="k">VWAP</td><td class="v ${vwState[1]}">${vwState[0]}</td></tr>`
+     + `<tr><td class="k">BB %B</td><td class="v">${num(s.bb_percent_b?s.bb_percent_b[i]:null,2)}</td></tr>`
+     + `<tr><td class="k">Tick volume</td><td class="v">${rv==null||isNaN(rv)?'—':rv.toFixed(2)+'x'}</td></tr>`
+     + `<tr><td class="k">UT level</td><td class="v">${num(utLvl)}</td></tr>`
+     + `<tr><td class="k">ATR 14</td><td class="v">${num(s.atr_14?s.atr_14[i]:null)}</td></tr>`
+     + oiRows(s, i)
+     + `</table>`;
+
+  /* ---- KEY LEVELS (market-wide, H1 grid) ---- */
+  const Z = DATA.zones;
+  const zi = zoneIdxFor(ms, s.step);
+  if(Z && zi >= 0){
+    const zt = Z.t ? Z.t[zi] : Z.t0 + zi*Z.step;
+    const lag = ms + s.step - (zt + Z.step);       // how stale for this bar
+    const atr = Z.atr[zi] || 0;
+    const res = Z.r[zi] || [], sup = Z.s[zi] || [];
+    h += `<h4>Key levels`
+       + (lag > 0 ? ` <span class="stale">as of ${tzParts(zt,state.tz).slice(11)}`
+                    + ` (${fmtDur(lag)} before)</span>` : '')
+       + `</h4>`;
+    if(res.length) h += zoneLine(res[0],'res','RESISTANCE',dp,close,atr);
+    h += `<div class="lvl cur"><span class="tag">CURRENT</span>`
+       + `<span>${num(Z.price[zi])}</span></div>`;
+    if(sup.length) h += zoneLine(sup[0],'sup','SUPPORT',dp,close,atr);
+    const extra = [...res.slice(1).map(z=>['R',z]), ...sup.slice(1).map(z=>['S',z])];
+    if(extra.length) h += `<div class="also">also ` + extra.map(([k,z]) =>
+        `${k} ${z[0]===z[1] ? fmtN(z[0],dp) : fmtN(z[0],dp)+'–'+fmtN(z[1],dp)}`
+      ).join(' &middot; ') + `</div>`;
+    const near = res[0] || sup[0];
+    if(near) h += `<div class="src">${near[3].map(k=>Z.sources[k]).join(' · ')}</div>`;
+  } else if(Z){
+    h += `<h4>Key levels</h4><div class="also">no snapshot yet at this bar</div>`;
+  }
+
+  /* ---- your own fills on this bar ---- */
+  const mine = myTradesOn(s, i);
+  if(mine.length){
+    h += `<h4>Your trades</h4>` + mine.map(t => {
+      const open = t.exit_time == null;
+      return `<div class="lvl"><span class="tag">${t.side.toUpperCase()} ${t.vol}`
+        + `${open ? ' · OPEN' : ''}</span>`
+        + `<span class="${t.net>0?'pos':'neg'}">${t.net>0?'+':''}${fmtN(t.net)}</span></div>`
+        + `<div class="also">${fmtN(t.entry_price,dp)}`
+        + (open ? ' · still open' : ` → ${fmtN(t.exit_price,dp)}`)
+        + (t.exit_time!=null ? ` · ${fmtDur(t.exit_time-t.entry_time)}` : '')
+        + (t.sl ? ` · SL ${fmtN(t.sl,dp)}` : '') + (t.tp ? ` · TP ${fmtN(t.tp,dp)}` : '')
+        + `</div>`;
+    }).join('');
+  }
+
+  /* ---- backtest trades filled on this bar ---- */
+  if(hit.length){
+    h += `<h4>Backtest</h4>` + hit.map(t =>
+      `<div class="lvl"><span class="tag">${t.signal.length>22?t.signal.slice(0,20)+'…':t.signal}</span>`
+      + `<span class="${t.net>0?'pos':'neg'}">${t.net>0?'+':''}${fmtN(t.net)}</span></div>`
+      + `<div class="also">${fmtN(t.entry_price,dp)} → ${fmtN(t.exit_price,dp)}`
+      + ` (${t.reason}) · ${t.bars} bars</div>`).join('');
+  }
+  return h;
+}
+
+/* ---------- interaction ---------- */
+let drag=null, measuring=null;
+function canvasPoint(e){
+  const r = cv.getBoundingClientRect();
+  return {px: e.clientX-r.left, py: e.clientY-r.top, r};
+}
+cv.addEventListener('mousedown', e=>{
+  const s=S(); if(!s||!VIEW) return;
+  state.userMoved = true;
+  const {px,py} = canvasPoint(e);
+  if(state.measureMode || e.shiftKey){
+    const a = {i: VIEW.xToI(px), p: VIEW.yToP(py)};
+    measuring = true;
+    state.measure = {a, b:{...a}};
+    e.preventDefault();
+    draw(); return;
+  }
+  if(state.measure){ state.measure=null; draw(); }
+  drag={x:e.clientX, start:state.start};
+  pressAt = {x:e.clientX, y:e.clientY};
+});
+
+/* Click a lane to pin it. Guarded on travel: panning the chart ends in a
+   `click` too, and pinning a lane every time the chart was dragged would be
+   maddening. 4px is below what a deliberate click ever moves. */
+let pressAt = null;
+cv.addEventListener('click', e=>{
+  const moved = pressAt && (Math.abs(e.clientX-pressAt.x) > 4
+                         || Math.abs(e.clientY-pressAt.y) > 4);
+  pressAt = null;
+  if(moved) return;
+  const r = cv.getBoundingClientRect();
+  const py = e.clientY - r.top;
+  const hit = RAIL_LANES.find(L => py >= L.y && py < L.y + L.h);
+  if(!hit) return;
+  state.railPin = state.railPin === hit.key ? null : hit.key;
+  draw();
+  if(railTip.style.display === 'block') railTip.innerHTML = railCard(hit);
+});
+window.addEventListener('mouseup', ()=>{ drag=null; measuring=false; });
+window.addEventListener('mousemove', e=>{
+  const s=S(); if(!s) return;
+  if(measuring && VIEW){
+    const {px,py} = canvasPoint(e);
+    state.measure.b = {i: VIEW.xToI(px), p: VIEW.yToP(py)};
+    tip.style.display='none'; state.cursor=null;
+    draw(); return;
+  }
+  if(drag){
+    state.cursor=null;
+    const cw=(cv.clientWidth-PADL-PADR)/state.count;
+    state.start = drag.start - (e.clientX-drag.x)/cw;
+    /* Panning away from the right edge is an explicit "stop following me". */
+    state.follow = state.start + state.count >= s.n - 1.5;
+    draw(); return;
+  }
+  const r=cv.getBoundingClientRect();
+  if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom){
+    clearCursor(); return; }
+
+  /* Rail lane under the pointer. Checked before the crosshair card so the two
+     never stack on top of each other. */
+  if(railHoverAt(e, r)) return;
+
+  /* The crosshair follows the pointer always; the CARD only when you asked for
+     it. Redraw is coalesced into one animation frame, so sweeping the mouse
+     across the chart costs one repaint per frame rather than one per pixel. */
+  state.cursor = {px: e.clientX-r.left, py: e.clientY-r.top};
+  requestCursorDraw();
+
+  const cw=(cv.clientWidth-PADL-PADR)/state.count;
+  const i=Math.round(state.start + (e.clientX-r.left-PADL)/cw - 0.5);
+  if(!state.details || i<0 || i>=s.n || s.c[i]==null){
+    tip.style.display='none'; return; }
+  const hit = visibleTrades().filter(t=>timeToIndex(s,t.entry_time)===i);
+  tip.innerHTML = buildTip(s, i, hit);
+  tip.style.display='block';
+  /* The card can be taller than the chart on a short pane, so clamp at both
+     ends — a plain min() puts the top off-screen and hides the timestamp. */
+  const tw=tip.offsetWidth, th=tip.offsetHeight;
+  tip.style.left = Math.max(4, Math.min(e.clientX-r.left+14, cv.clientWidth-tw-8))+'px';
+  tip.style.top  = Math.max(4, Math.min(e.clientY-r.top+14, cv.clientHeight-th-8))+'px';
+});
+
+/* ---------- rail lane hover -------------------------------------------------
+   The rail packs eleven lanes into ~140px. Reading one of them out of that is
+   the whole problem, so the lane under the pointer is lifted, the rest are
+   pushed back, and the card answers the question the lane cannot: not "did it
+   fire" but "is it still working". Hence 7d / 30d / 90d side by side -- a
+   channel that has quietly stopped working shows up as a falling sequence, and
+   nothing else on this page would have shown that. */
+const railTip = document.getElementById('railtip');
+
+function channelRec(key){
+  return (DATA.channels||[]).find(c=>c.signal===key) || null;
+}
+
+function railHoverAt(e, r){
+  const py = e.clientY - r.top, px = e.clientX - r.left;
+  const hit = RAIL_LANES.find(L => py >= L.y && py < L.y + L.h);
+  const key = hit ? hit.key : null;
+  if(key !== state.railHover){
+    state.railHover = key;
+    requestCursorDraw();
+  }
+  if(!key){ railTip.style.display='none'; return false; }
+  tip.style.display = 'none';
+  state.cursor = null;
+  railTip.innerHTML = railCard(hit);
+  railTip.style.display = 'block';
+  const tw = railTip.offsetWidth, th = railTip.offsetHeight;
+  railTip.style.left = Math.max(4, Math.min(px + 16, cv.clientWidth - tw - 8))+'px';
+  railTip.style.top  = Math.max(4, Math.min(py + 14, cv.clientHeight - th - 8))+'px';
+  return true;
+}
+
+function railCard(L){
+  const rec = channelRec(L.key);
+  const head = `<div class="hd"><span style="color:${L.col}">${L.label}</span>`;
+  if(!rec){
+    /* A timeframe lane. It has no trades and therefore no win rate -- saying
+       so is better than an empty card that looks broken. */
+    return head + `<span class="dim">UT flips</span></div>`
+      + `<div class="foot">This timeframe's own UT crosses. Not a strategy, so `
+      + `there is no win rate to show.${pinHint()}</div>`;
+  }
+  const be = rec.breakeven;
+  const row = (label, t)=>{
+    if(!t || !t.n) return `<tr><td class="k">${label}</td>`
+      + `<td class="v dim">no settled trades</td></tr>`;
+    const edge = be==null ? null : +(t.win_pct - be).toFixed(1);
+    const cls = edge==null ? '' : (edge>0 ? 'pos' : 'neg');
+    return `<tr><td class="k">${label}</td><td class="v">`
+      + `<span class="${cls}">${t.win_pct}%</span> `
+      + `<span class="dim">${t.wins}/${t.n}</span>`
+      + (edge==null ? '' : ` <span class="${cls}">${edge>0?'+':''}${edge}</span>`)
+      + `</td></tr>`;
+  };
+  const w = rec.windows || {};
+  return head
+    + `<span class="dim">${rec.measured?'measured':'mined'}</span></div>`
+    + `<table>`
+    + row('7 days',  w['7d'])
+    + row('30 days', w['30d'])
+    + row('90 days', w['90d'])
+    + row('window',  rec)
+    + `</table>`
+    + `<div class="foot">${rec.bracket} — break-even `
+    + `<b>${be==null?'?':be+'%'}</b>. The number after each rate is points `
+    + `above or below that, which is the only comparison that means anything `
+    + `across different brackets.${pinHint()}</div>`;
+}
+
+function pinHint(){
+  return state.railPin
+    ? ' <b>Pinned</b> — click the lane again to release.'
+    : ' Click to pin.';
+}
+
+let cursorRaf = 0;
+function requestCursorDraw(){
+  if(cursorRaf) return;
+  cursorRaf = requestAnimationFrame(()=>{ cursorRaf = 0; draw(); });
+}
+function clearCursor(){
+  tip.style.display='none';
+  railTip.style.display='none';
+  /* The hover follows the mouse; the PIN is a decision and survives leaving
+     the chart -- that is the entire reason for having both. */
+  if(state.railHover){ state.railHover = null; requestCursorDraw(); }
+  if(state.cursor){ state.cursor = null; requestCursorDraw(); }
+}
+cv.addEventListener('mouseleave', clearCursor);
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  state.userMoved = true;
+  const s=S(); if(!s) return;
+  const r=cv.getBoundingClientRect();
+  const frac=(e.clientX-r.left-PADL)/(cv.clientWidth-PADL-PADR);
+  const anchor = state.start + frac*state.count;
+  const k = e.deltaY>0 ? 1.15 : 1/1.15;
+  state.count = Math.max(20, Math.min(s.n, state.count*k));
+  state.start = anchor - frac*state.count;
+  state.follow = state.start + state.count >= s.n - 1.5;
+  draw();
+}, {passive:false});
+
+function focusTrade(t){
+  state.selected = t.id;
+  const s=S();
+  const i = timeToIndex(s, t.entry_time);
+  state.count = Math.max(40, Math.min(s.n, Math.max(60, (t.bars||10)*6)));
+  state.start = i - state.count*0.35;
+  state.follow = false;
+  draw(); renderTrades();
+  const row=document.querySelector(`tr[data-id="${t.id}"]`);
+  if(row) row.scrollIntoView({block:'nearest'});
+}
+function goLive(){
+  const s=S(); if(!s) return;
+  state.follow = true;
+  state.selected = null;
+  state.start = liveStart(s);
+  draw(); renderTrades();
+}
+function stepTrade(dir){
+  const list=visibleTrades(); if(!list.length) return;
+  let idx=list.findIndex(t=>t.id===state.selected);
+  idx = idx<0 ? (dir>0?0:list.length-1) : Math.max(0,Math.min(list.length-1, idx+dir));
+  focusTrade(list[idx]);
+}
+
+/* ---------- chrome ---------- */
+function chip(parent,label,active,onclick,cls){
+  const b=document.createElement('button');
+  b.textContent=label; if(active) b.classList.add('on');
+  if(cls) b.classList.add(cls);
+  b.onclick=onclick; parent.appendChild(b); return b;
+}
+function buildBar(){
+  const sy=document.getElementById('syms');
+  if(BOOK.symbols.length>1){
+    sy.innerHTML='';
+    BOOK.symbols.forEach(sym=>chip(sy, BOOK.labels[sym]||sym,
+      sym===state.symbol, ()=>switchSymbol(sym), 'sym'));
+  } else { sy.style.display='none'; }
+
+  const tfs=document.getElementById('tfs');
+  tfs.innerHTML='<span class="dim">TF</span>';
+  DATA.timeframes.forEach(tf=>chip(tfs,tf,tf===state.tf,()=>{
+    const s=S(); const centreMs = barTime(s, Math.floor(state.start+state.count/2));
+    const spanMs = state.count * s.step;
+    state.tf=tf;
+    const n=S();
+    state.count = Math.max(20, Math.min(n.n, spanMs/n.step));
+    state.start = Math.max(0, timeToIndex(n, centreMs) - state.count/2);
+    state.follow = state.start + state.count >= n.n - 1.5;
+    buildBar(); draw();
+  }));
+
+  const tz=document.getElementById('tzs');
+  tz.innerHTML='<span class="dim">Time</span>';
+  Object.keys(TZS).forEach(k=>chip(tz, TZS[k].label, k===state.tz, ()=>{
+    state.tz=k; buildBar(); renderSide(); renderTrades(); draw();
+    if(lastStatus) renderLive(lastStatus);}));
+
+  const ov=document.getElementById('overlays');
+  ov.innerHTML='<span class="dim">Show</span>';
+  const t=(k,label)=>chip(ov,label,state.overlays[k],()=>{
+    state.overlays[k]=!state.overlays[k];buildBar();draw();});
+  t('ema','EMA 7/14/28'); t('ut','UT level'); t('vwap','VWAP'); t('trades','Trades');
+  t('sessions','Sessions');
+  t('rail','UT rail (all TF)'); t('vol','Volume'); t('rsi','RSI'); t('macd','MACD');
+  if(hasOI()) t('oi','Open interest');
+  if((DATA.my_trades||[]).length) t('mine','My trades');
+
+  const mb=document.getElementById('measure');
+  mb.classList.toggle('on', state.measureMode);
+
+  const fl=document.getElementById('filters');
+  fl.innerHTML='<span class="dim">Signal</span>';
+  chip(fl,'all',state.signalFilter===null,()=>{state.signalFilter=null;buildBar();draw();renderTrades()});
+  DATA.by_signal.forEach(r=>{
+    const short = r.signal.length>26 ? r.signal.split('+')[0]+'+…' : r.signal;
+    chip(fl,`${short} (${r.n})`,state.signalFilter===r.signal,()=>{
+      state.signalFilter = state.signalFilter===r.signal?null:r.signal;
+      buildBar();draw();renderTrades();});
+  });
+}
+
+/* ---------- the trades panel ------------------------------------------------
+   Newest first by default: when you are watching live, the trade you care about
+   is the last one, and having to scroll ~350 rows to reach it was the whole
+   complaint. The outcome filter is what makes a pattern visible — a list of only
+   the losers is the fastest way to see what they had in common. */
+/* The six channels, in the order they were built. `rule` is the measured one;
+   the rest are mined or ported and are kept visually apart everywhere else on
+   this page, so the list must never silently blend them into one win rate. */
+const CHANNEL_SRC = {
+  rule:    () => DATA.trades  || [],
+  signal2: () => DATA.signal2 || [],
+  signal3: () => DATA.signal3 || [],
+  signal4: () => DATA.signal4 || [],
+  signal5: () => DATA.signal5 || [],
+  signal7: () => DATA.signal7 || [],
+};
+
+/* Signals 2-5 and 7 come from the chart-lane builders, which have no reason to
+   carry a row id or a display name. The panel, the selection highlight and
+   focusTrade() all key off those, so they are added here rather than in five
+   places server-side. The id is namespaced by channel: two signals can fire on
+   the same bar, and an unprefixed entry_time would make them the same row. */
+function channelRows(key){
+  const src = CHANNEL_SRC[key];
+  if(!src) return [];
+  const rows = src() || [];
+  if(key === 'rule') return rows.slice();
+  return rows.map(r => Object.assign({}, r, {
+    id: key + ':' + r.entry_time,
+    signal: key,
+    ambiguous: 0,
+  }));
+}
+
+function tradeRows(){
+  const mine = state.tradeSource === 'mine';
+  let list;
+  if(mine){
+    list = (DATA.my_trades || []).slice();
+  } else if(hasChannels() && state.tradeChannel !== 'all'){
+    list = channelRows(state.tradeChannel);
+  } else if(hasChannels()){
+    list = Object.keys(CHANNEL_SRC).reduce((a,k)=>a.concat(channelRows(k)), []);
+  } else {
+    list = visibleTrades().slice();      /* static report: rule trades only */
+  }
+  /* An unresolved trade is neither a win nor a loss. It used to fall into
+     "loss" by having net 0, which mattered little when only the rule was
+     listed and matters a lot now: the mined channels carry a long tail of
+     fires whose 24 hours have not elapsed. */
+  if(state.tradeOutcome === 'win')
+    list = list.filter(t => t.resolved !== false && t.net > 0);
+  if(state.tradeOutcome === 'loss')
+    list = list.filter(t => t.resolved !== false && t.net <= 0);
+  list.sort((a,b) => state.tradeOrder === 'new'
+    ? b.entry_time - a.entry_time : a.entry_time - b.entry_time);
+  return list;
+}
+
+function hasChannels(){ return (DATA.channels || []).length > 0; }
+
+function renderTrades(){
+  const mine = state.tradeSource === 'mine';
+  const list = tradeRows();
+  document.getElementById('tcount').textContent = `(${list.length})`;
+
+  /* controls */
+  const ctl = document.getElementById('tctl');
+  ctl.innerHTML = '';
+  const btn = (label, on, fn, title) => {
+    const b = document.createElement('button');
+    b.textContent = label; if(on) b.classList.add('on');
+    if(title) b.title = title;
+    b.onclick = fn; ctl.appendChild(b); return b;
+  };
+  if((DATA.my_trades||[]).length){
+    btn('Backtest', !mine, ()=>{state.tradeSource='bt'; renderTrades();});
+    btn('Mine',      mine, ()=>{state.tradeSource='mine'; renderTrades();});
+    const sep=document.createElement('div'); sep.className='sep'; ctl.appendChild(sep);
+  }
+  /* Channel picker. Each button carries its own win rate, so the comparison is
+     visible without clicking through all five -- and the mined ones are marked,
+     because a bare percentage next to the measured rule would read as the same
+     kind of number. */
+  if(!mine && hasChannels()){
+    const rows = DATA.channels;
+    /* Deliberately a COUNT, not a percentage. Pooling +/-25, +/-15 and +/-10
+       brackets gives a number with no break-even to compare against, and it
+       would sit here as the largest, most authoritative-looking figure in the
+       panel while meaning nothing at all. */
+    const tot = rows.reduce((a,r)=>a+r.n, 0);
+    btn(`all (${tot})`, state.tradeChannel==='all',
+        ()=>{state.tradeChannel='all'; renderTrades(); draw();},
+        'every channel pooled — four different brackets, so there is no single '
+        + 'win rate to quote here; pick a channel to get one');
+    rows.forEach(r=>{
+      const pct = r.win_pct==null ? '—' : r.win_pct+'%';
+      const b = btn(`${r.measured?'':'⚑ '}${r.signal} ${pct}`,
+          state.tradeChannel===r.signal,
+          ()=>{state.tradeChannel = state.tradeChannel===r.signal ? 'all' : r.signal;
+               renderTrades(); draw();},
+          `${r.wins}/${r.n} settled${r.open?` · ${r.open} still open`:''}`
+          + ` · net ${r.net>0?'+':''}${r.net.toFixed(2)}`
+          + (r.measured ? ' · the measured rule'
+                        : ' · MINED pattern, carries none of that evidence'));
+      if(!r.n) b.classList.add('dimbtn');
+    });
+    const sep3=document.createElement('div'); sep3.className='sep'; ctl.appendChild(sep3);
+  }
+  btn('all',  state.tradeOutcome==='all',  ()=>{state.tradeOutcome='all';  renderTrades(); draw();});
+  btn('win',  state.tradeOutcome==='win',  ()=>{state.tradeOutcome='win';  renderTrades(); draw();});
+  btn('loss', state.tradeOutcome==='loss', ()=>{state.tradeOutcome='loss'; renderTrades(); draw();});
+  const sep2=document.createElement('div'); sep2.className='sep'; ctl.appendChild(sep2);
+  btn(state.tradeOrder==='new' ? 'newest ↓' : 'oldest ↑', false,
+      ()=>{state.tradeOrder = state.tradeOrder==='new' ? 'old' : 'new'; renderTrades();},
+      'toggle order');
+
+  /* The outcome filter also drives the chart overlay for your own fills, so
+     "show me only the losers" means the same thing in both places. */
+  state.myFilter = state.tradeOutcome;
+
+  /* A live signal that has not reached its target, stop or 24h limit has NO
+     outcome yet. Counting it in the denominator would report it as a loss and
+     drag the win rate toward zero purely as a function of how recently you
+     looked — and would disagree with the Summary panel on the same screen. */
+  const settled = list.filter(t => t.resolved !== false);
+  const running = list.length - settled.length;
+  const net = settled.reduce((a,t)=>a+t.net, 0);
+  const wins = settled.filter(t=>t.net>0).length;
+  /* Net dollars pool honestly across channels -- money is money. A win RATE
+     does not, because each channel has its own break-even, so it is withheld
+     in the pooled view instead of being quoted as if it meant something. */
+  const pooled = !mine && hasChannels() && state.tradeChannel === 'all';
+  const netHtml = `net <span class="${net>0?'pos':'neg'}">`
+    + `${net>0?'+':''}${fmtN(net)}</span>`;
+  document.getElementById('tsum').innerHTML = settled.length
+    ? (pooled
+        ? `${settled.length} settled across ${DATA.channels.length} channels · `
+          + netHtml + ` · <span class="dim">pick one channel for a win rate`
+          + `</span>`
+        : `${wins}/${settled.length} won · ` + netHtml)
+      + (running ? ` · <span class="dim">${running} still open</span>` : '')
+      + (mine ? ' · your real fills' : '')
+    : (running ? `${running} signal(s) still open — no outcome yet`
+               : 'nothing matches this filter');
+
+  /* signal5 alone carries ~3,200 trades across this window and "all" is ~3,900.
+     Every row is two divs, so rendering the lot costs ~12k nodes and makes the
+     panel visibly janky to scroll. Capped -- but the count above, the win rate
+     on the buttons and the net in the summary are all computed on the FULL
+     list, so nothing here is a truncated statistic. Only the visible rows are
+     limited, and the row that says so is rendered, not implied. */
+  const CAP = 300;
+  const shown = list.slice(0, CAP);
+  const tb = document.getElementById('tbody');
+  tb.innerHTML = '';
+  shown.forEach(t=>{
+    const tr = document.createElement('tr');
+    tr.dataset.id = t.id;
+    if((mine ? state.selectedMine : state.selected) === t.id) tr.classList.add('sel');
+    const label = mine
+      ? `${t.side} ${t.vol}` + (t.exit_time==null ? ' · OPEN' : '')
+      : (t.signal.length>24 ? t.signal.slice(0,22)+'…' : t.signal);
+    /* Direction on every channel row that carries one: signal3 trades both
+       ways (sweep = long, fake-break = short) and a bare "signal3" label
+       never said which way the trade went. */
+    const dirTag = (!mine && t.side)
+      ? (t.side==='long' ? ' <b class="pos">&#9650;</b>'
+                         : ' <b class="neg">&#9660;</b>') : '';
+    const sub = mine
+      ? (t.exit_time==null ? 'still open' : `${fmtN(t.entry_price)} → ${fmtN(t.exit_price)}`)
+      : `${t.reason}${t.ambiguous?' ⚠':''}`;
+    /* A still-running trade has no real net yet; the "0.00" used to sit in this
+       cell and read as a flat trade, so it is now blanked out and the decision's
+       own numbers are quoted instead: entry, stop and target for every row. */
+    const live = t.resolved === false;
+    const px = (v)=> (v == null || !isFinite(v)) ? '—' : fmtN(v);
+    const hasPx = !mine && t.entry_price != null
+      && isFinite(t.entry_price) && t.entry_price !== 0;
+    const prices = hasPx
+      ? `entry ${px(t.entry_price)} · SL ${t.sl?px(t.sl):'—'} · TP ${t.tp?px(t.tp):'—'}`
+      : '';
+    tr.innerHTML =
+      `<td><div>${fmtTs(t.entry_time)}</div><div class="dim">${label}${dirTag}</div></td>`+
+      `<td><div class="${t.net>0?'pos':'neg'}${live?' dim':''}">`
+      + (live ? '—' : `${t.net>0?'+':''}${fmtN(t.net)}`) + `</div>`+
+      (prices ? `<div class="dim">${prices}</div>` : '')+
+      `<div class="dim">${sub}</div></td>`;
+    tr.onclick = () => mine ? focusMine(t) : focusTrade(t);
+    tb.appendChild(tr);
+  });
+  if(list.length > shown.length){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="2" class="dim" style="font-size:10px;`
+      + `padding-top:6px">showing the ${shown.length} `
+      + `${state.tradeOrder==='new'?'newest':'oldest'} of ${list.length} · `
+      + `the counts and win rates above use all ${list.length}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+function focusMine(t){
+  state.selectedMine = t.id; state.selected = null;
+  const s = S();
+  const i = timeToIndex(s, t.entry_time);
+  const span = t.exit_time!=null
+    ? Math.max(20, (timeToIndex(s, t.exit_time) - i) * 4) : 60;
+  state.count = Math.max(40, Math.min(s.n, span));
+  state.start = i - state.count*0.35;
+  state.follow = false; state.userMoved = true;
+  draw(); renderTrades();
+  const row = document.querySelector(`tr[data-id="${t.id}"]`);
+  if(row) row.scrollIntoView({block:'nearest'});
+}
+
+function renderSide(){
+  document.getElementById('title').textContent =
+    `${DATA.strategy_name} — ${DATA.symbol} ${DATA.strategy_timeframe}`;
+  document.getElementById('sub').textContent =
+    `${fmtTs(DATA.start_ms)} → ${fmtTs(DATA.end_ms)} ${TZS[state.tz].label}`;
+  document.getElementById('hash').textContent =
+    `run ${DATA.run_id} · config ${DATA.config_hash}` +
+    (DATA.qty ? ` · qty ${DATA.qty}` : '');
+
+  const st=document.getElementById('stats');
+  st.innerHTML = Object.entries(DATA.stats).map(([k,v])=>{
+    const neg = /^-/.test(String(v));
+    const cls = (k==='net P/L'||k==='expectancy / trade') ? (neg?'neg':'pos') : '';
+    return `<tr><td class="muted">${k}</td><td class="${cls}">${v}</td></tr>`;
+  }).join('');
+
+  /* Live pages have five channels; a static backtest has only the rule's
+     sub-signals. Same table, whichever the payload carries. */
+  const sigTbl = document.getElementById('signals');
+  if(hasChannels()){
+    sigTbl.innerHTML = DATA.channels.map(r=>{
+      const pct = r.win_pct==null ? '<span class="dim">no settled trades yet</span>'
+                                  : `${r.wins}/${r.n} · ${r.win_pct}%`;
+      const tag = r.measured
+        ? '<span class="dim" title="the validated rule">measured</span>'
+        : '<span style="color:#E8873B" title="mined pattern — carries none of '
+          + 'the measured rule\'s evidence">mined</span>';
+      return `<tr><td class="muted">${r.signal}<div style="font-size:10px">${tag}`
+        + `</div></td><td><div>${pct}</div>`
+        + (r.open ? `<div class="dim" style="font-size:10px">${r.open} still open`
+                    + `</div>` : '')
+        + `<div class="${r.net>0?'pos':'neg'}">${r.net>0?'+':''}${fmtN(r.net)}`
+        + `</div></td></tr>`;
+    }).join('')
+      + '<tr><td colspan="2" class="dim" style="font-size:10px;padding-top:6px">'
+      + `Whole chart window, from ${fmtTs(DATA.start_ms)} — much longer than `
+      + 'any of these were fitted on, so a mined channel reading well below its '
+      + 'headline number is the decay, not a bug. Four different brackets: '
+      + 'compare each against its own break-even, never against the others.'
+      + '</td></tr>';
+  } else {
+    sigTbl.innerHTML = DATA.by_signal.map(r=>
+      `<tr><td class="muted">${r.signal}</td><td>`+
+      `<div>${r.n} · ${r.win_pct}%</div>`+
+      `<div class="${r.net>0?'pos':'neg'}">${r.net>0?'+':''}${fmtN(r.net)}</div></td></tr>`).join('');
+  }
+
+  document.getElementById('cfg').textContent = DATA.config_yaml;
+  renderComparison();
+
+  const warn=[];
+  const n = DATA.trades.length;
+  /* In live mode these are EMITTED SIGNALS, not backtested trades, and there is
+     no win rate to have a confidence interval about — the outcomes are not known
+     yet. Showing the backtest's small-sample warning here would be telling you
+     that a live log is statistically underpowered, which is not a defect. */
+  if(!DATA.live_mode && n < 100) warn.push(`Only ${n} trades. The win-rate confidence interval in the summary is wide enough that this run cannot distinguish a real edge from chance.`);
+  const amb = DATA.trades.filter(t=>t.ambiguous).length;
+  if(amb) warn.push(`${amb} trade(s) hit the target and the stop inside one bar and were resolved by 1-minute replay, or fell back to assuming the stop filled first.`);
+  document.getElementById('warnbox').innerHTML =
+    warn.map(w=>`<div class="warn">${w}</div>`).join('');
+}
+
+/* Cross-symbol table. Built from whichever payloads are loaded — a symbol you
+   have not opened yet shows a dash rather than a fabricated number. */
+function renderComparison(){
+  if(BOOK.symbols.length<2 || BOOK.live_mode){
+    document.getElementById('cmpsec').style.display='none'; return; }
+  document.getElementById('cmpsec').style.display='block';
+  const meta = {};
+  (BOOK.comparison?.symbols||[]).forEach(r=>meta[r.symbol]=r);
+  const rows = BOOK.symbols.map(sym=>{
+    const p = BOOK.runs[sym];
+    const m = meta[sym];
+    const sub = m ? `ATR ${m.atr_percent}% of px` : '';
+    if(!p) return `<tr${sym===state.symbol?' class="here"':''}><td>${BOOK.labels[sym]||sym}`+
+      `<div class="dim">${sub}</div></td><td class="dim">not loaded</td><td></td></tr>`;
+    const net = p.trades.reduce((a,t)=>a+t.net,0);
+    const wins = p.trades.filter(t=>t.net>0).length;
+    const wp = p.trades.length ? (wins/p.trades.length*100).toFixed(1) : '—';
+    const gross = p.trades.reduce((a,t)=>a+t.gross,0);
+    return `<tr${sym===state.symbol?' class="here"':''}>`+
+      `<td>${BOOK.labels[sym]||sym}<div class="dim">${sub}</div></td>`+
+      `<td>${p.trades.length} · ${wp}%<div class="dim">qty ${p.qty??'—'}</div></td>`+
+      `<td class="${net>0?'pos':'neg'}">${net>0?'+':''}${fmtN(net)}`+
+      `<div class="dim">gross ${gross>0?'+':''}${fmtN(gross)}</div></td></tr>`;
+  });
+  document.getElementById('cmptbl').innerHTML =
+    '<tr><td class="dim">symbol</td><td class="dim">trades · win</td>'+
+    '<td class="dim">net</td></tr>' + rows.join('');
+  const c = BOOK.comparison;
+  document.getElementById('cmpnote').textContent = c
+    ? `Same window ${fmtTs(c.start_ms)} → ${fmtTs(c.end_ms)} ${TZS[state.tz].label} on ${c.timeframe}. `
+      + 'Size was scaled by the ATR ratio so each symbol risks the same dollars '
+      + 'per trade — otherwise a $25 stop is 1.7 ATR on gold and 0.06 ATR on BTC, '
+      + 'and the comparison would measure tick size, not the strategy.'
+    : '';
+}
+
+/* ---------- symbol switching ---------- */
+async function switchSymbol(sym){
+  if(sym===state.symbol) return;
+  if(!BOOK.runs[sym]){
+    const box=document.getElementById('loading');
+    box.style.display='flex'; box.textContent=`loading ${sym}…`;
+    try{
+      const r = await fetch(`${payloadFile(sym)}?_=${Date.now()}`, {cache:'no-store'});
+      if(!r.ok) throw new Error(r.status);
+      BOOK.runs[sym] = await r.json();
+    }catch(err){
+      box.textContent = `${sym} is not available here — it is only fetched when the page is served by \`watch\`.`;
+      setTimeout(()=>box.style.display='none', 2600);
+      return;
+    }
+    box.style.display='none';
+  }
+  state.symbol = sym;
+  DATA = BOOK.runs[sym];
+  /* Hold the same clock time and span across the switch, so you are comparing
+     the same moment on both instruments rather than landing somewhere random. */
+  const oldS = S(); const centreMs = oldS ? barTime(oldS, Math.floor(state.start+state.count/2)) : null;
+  const spanMs = oldS ? state.count*oldS.step : null;
+  if(!DATA.series[state.tf]) state.tf = defaultTf();
+  const s = S();
+  if(centreMs!=null){
+    state.count = Math.max(20, Math.min(s.n, spanMs/s.step));
+    state.start = Math.max(0, timeToIndex(s, centreMs) - state.count/2);
+  } else { state.count = Math.min(160, s.n); state.start = s.n - state.count; }
+  state.selected = null;
+  state.signalFilter = null;
+  state.measure = null;
+  /* The session map is per symbol; the next fast tick (~5 s) brings the new
+     one. Until then showing the old symbol's Asia range next to this chart
+     would be confident nonsense. */
+  lastSessions = null;
+  document.getElementById('sesssec').style.display='none';
+  buildBar(); renderSide(); renderTrades(); draw();
+  if(lastStatus) renderLive(lastStatus);
+  renderRisk();
+}
+
+/* ---------- live ------------------------------------------------------------
+   Two feeds, deliberately separated:
+
+   * `live.json` (fast, ~5 s) is the newest bars including the FORMING one. It is
+     patched into the arrays in place, so nothing reloads and your zoom, your
+     selected trade and any measurement all survive.
+   * `status.json` (slow) says a fresh backtest exists. Its payload is fetched
+     and swapped in — again without a reload, because this file is ~8 MB and a
+     reload while you are zoomed into a trade throws away what you were reading.
+
+   The forming bar is drawn but never generates a marker: `ut_buy`/`ut_sell` only
+   ever carry CLOSED bars, which is the same CONFIRMED/LIVE split the engine keeps.
+*/
+/* A symbol whose name needs escaping (`MT5:GOLD` -> `payload_MT5_GOLD.json`)
+   cannot have its filename rebuilt here without the two sides drifting, and a
+   colon in a Windows path silently writes to an alternate data stream rather
+   than failing. So the server states the mapping and this only ever looks it up. */
+function payloadFile(sym){
+  return (BOOK.files && BOOK.files[sym]) ||
+         (lastStatus && lastStatus.files && lastStatus.files[sym]) ||
+         `payload_${sym}.json`;
+}
+
+/* Re-mine Signal 4 on demand. The same search the Sunday scheduled task runs,
+   reached through `/api/signal4_refit` so the button and the schedule cannot
+   drift into doing different things.
+
+   It takes ~10 s, which is long enough that a button giving no feedback would
+   look broken and get clicked again -- hence the disable-and-count-up. The
+   result is reported on the button itself: an updated config shows the new win
+   rate, and "nothing met the bar" is shown as its own outcome rather than as a
+   failure, because keeping last week's pattern IS the designed behaviour. */
+async function refitSignal4(){
+  const b = document.getElementById('s4refit');
+  const original = b.textContent;
+  b.disabled = true;
+  let secs = 0;
+  const tick = setInterval(()=>{ b.textContent = `⏳ mining… ${++secs}s`; }, 1000);
+  b.textContent = '⏳ mining…';
+  try{
+    const r = await fetch('api/signal4_refit', {method:'POST', cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j = await r.json();
+    clearInterval(tick);
+    if(j.busy){
+      b.textContent = '… already running';
+    }else if(j.rc === 2){
+      b.textContent = '— none met the bar';
+    }else if(j.updated){
+      b.textContent = `✓ ${(j.win_rate*100).toFixed(0)}% · ${j.trades} trades`;
+      // Pull the fresh status so the Signal 4 panel matches the button rather
+      // than showing last week's pattern until the next poll.
+      try{
+        const st = await fetch('status.json?_='+Date.now(), {cache:'no-store'}).then(x=>x.json());
+        if(st.rule4){ lastRule4 = st.rule4; renderRule4(); }
+      }catch(e){ /* the panel will catch up on the next poll */ }
+    }else{
+      b.textContent = '— unchanged';
+    }
+  }catch(err){
+    clearInterval(tick);
+    b.textContent = '⚠ ' + String(err.message||err).slice(0,32);
+  }
+  setTimeout(()=>{ b.disabled = false; b.textContent = original; }, 6000);
+}
+
+/* Manual escape hatch for open interest going stale: hits `/api/oi_refresh`,
+   which re-syncs all three symbols and rebuilds their payload files server-
+   side (see Watcher.refresh_open_interest — this is not a special client-only
+   path, it is the same sync the watcher's own cycle runs). The payload for
+   the symbol on screen is then re-fetched so the fix is visible immediately,
+   rather than waiting up to `interval_s` (5 min by default) for the next
+   scheduled cycle to pick it up on its own. */
+async function refreshOI(){
+  const b = document.getElementById('oirefresh');
+  const original = b.textContent;
+  b.disabled = true;
+  b.textContent = '↻ syncing…';
+  try{
+    const r = await fetch('api/oi_refresh', {method:'POST', cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const result = await r.json();
+    const failed = Object.entries(result).filter(([,v]) => v.error);
+    const gained = Object.values(result).reduce((n,v) => n + (v.rows||0), 0);
+    if(failed.length){
+      b.textContent = `⚠ ${failed[0][0]}: ${failed[0][1].error}`.slice(0,40);
+    }else{
+      const pr = await fetch(`${payloadFile(state.symbol)}?_=${Date.now()}`, {cache:'no-store'});
+      if(pr.ok){
+        BOOK.runs[state.symbol] = await pr.json();
+        DATA = BOOK.runs[state.symbol];
+        buildBar(); renderSide(); draw();
+      }
+      b.textContent = gained ? `✓ +${gained} pts` : '✓ already current';
+    }
+  }catch(err){
+    b.textContent = '⚠ ' + String(err.message||err).slice(0,40);
+  }
+  setTimeout(()=>{ b.disabled = false; b.textContent = original; }, 3000);
+}
+
+let lastStatus = null;
+let liveSeen = false;
+const livePrice = {};   /* newest price per symbol, from the fast feed */
+let seenRun = {};
+let liveTimer = null, statusTimer = null;
+
+function patchSeries(s, upd){
+  if(!upd || !upd.t || !upd.t.length) return 0;
+  let appended = 0;
+  for(let k=0;k<upd.t.length;k++){
+    const ms = upd.t[k];
+    const i = timeToIndex(s, ms);
+    if(i < 0 || i > s.n) continue;         /* before the series, or past a gap */
+    if(i === s.n){
+      for(const key of PATCH_KEYS) if(s[key]) s[key].push(null);
+      s.n++; appended++;
+    }
+    for(const key of PATCH_KEYS){
+      if(s[key] && upd[key]) s[key][i] = upd[key][k];
+    }
+  }
+  s.forming_t = upd.forming_t ?? null;
+  return appended;
+}
+function mergeCrosses(s, tf, upd){
+  if(!upd) return;
+  const add=(times, idxArr, evArr)=>{
+    for(const ms of times||[]){
+      if(evArr.length && ms <= evArr[evArr.length-1]) continue;
+      evArr.push(ms);
+      const i = timeToIndex(s, ms);
+      if(i>=0 && i<s.n && (!idxArr.length || idxArr[idxArr.length-1] < i)) idxArr.push(i);
+    }
+  };
+  const ev = DATA.ut_events[tf] || (DATA.ut_events[tf]={buy:[],sell:[]});
+  add(upd.ut_buy,  s.ut_buy,  ev.buy);
+  add(upd.ut_sell, s.ut_sell, ev.sell);
+}
+
+async function pollLive(){
+  let st;
+  try{
+    const r = await fetch('live.json?_='+Date.now(), {cache:'no-store'});
+    if(!r.ok) return;
+    st = await r.json();
+  }catch(e){ return; }              /* not served live — stay quiet */
+
+  const feed = (st.symbols||{})[state.symbol];
+  if(feed){
+    const s0 = S();
+    const wasFollowing = state.follow;
+    let appended = 0;
+    for(const [tf, upd] of Object.entries(feed.series||{})){
+      const s = DATA.series[tf]; if(!s) continue;
+      const n = patchSeries(s, upd);
+      mergeCrosses(s, tf, upd);
+      if(s === s0) appended = n;
+    }
+    if(appended && wasFollowing) state.start += appended;
+    if(!liveSeen && !state.userMoved) goLive();
+    draw();
+  }
+  liveSeen = true;
+  for(const [sym, blob] of Object.entries(st.symbols||{})){
+    if(blob.price!=null) livePrice[sym] = blob.price;
+    if(blob.risk) lastRisk[sym] = blob.risk;
+  }
+  /* Risk and the rule ride the FAST feed: they are the part of the page that is
+     supposed to move with price, and waiting 5 minutes for the slow loop to say
+     a signal fired would defeat the point of having an alert at all. */
+  if(st.rule) { lastRule = st.rule; renderRule(); }
+  if(st.rule2){ lastRule2 = st.rule2; renderRule2(); }
+  if(st.rule3){ lastRule3 = st.rule3; renderRule3(); }
+  if(st.rule4){ lastRule4 = st.rule4; renderRule4(); }
+  if(st.rule5){ lastRule5 = st.rule5; renderRule5(); }
+  if(st.rule7){ lastRule7 = st.rule7; renderRule7(); }
+  /* The session map rides the fast feed: the Asia range is worth watching
+     while it builds, and a sweep banner five minutes late is yesterday's
+     news. The slow feed is the fallback when the 1m fetch is failing. */
+  if(feed && feed.sessions){ lastSessions = feed.sessions; renderSessions(); }
+  if(st.notify) renderNotify(st.notify);
+  renderRisk();
+  handleEvents(st.events);
+  if(lastStatus) renderLive(lastStatus);
+  beat(st);
+}
+function beat(st){
+  const pill=document.getElementById('livepill');
+  const dot=document.getElementById('dot');
+  pill.classList.remove('off');
+  dot.classList.add('beat');
+  setTimeout(()=>dot.classList.remove('beat'), 700);
+  const px = livePrice[state.symbol];
+  const when = st.version ? tzParts(st.version, state.tz).slice(11) + ' ' + TZS[state.tz].label
+                          : (st.updated_myt||'');
+  document.getElementById('livetext').textContent =
+    `live · ${when}` +
+    (px!=null ? ` · ${fmtN(px, priceDp())}` : '') +
+    (st.interval_s ? ` · every ${st.interval_s}s` : '');
+}
+
+async function pollStatus(){
+  let st;
+  try{
+    const r = await fetch('status.json?_='+Date.now(), {cache:'no-store'});
+    if(!r.ok) return;
+    st = await r.json();
+  }catch(e){ return; }
+  lastStatus = st;
+  renderLive(st);
+  if(st.files) BOOK.files = Object.assign(BOOK.files||{}, st.files);
+  if(st.live_mode) BOOK.live_mode = true;
+  /* The slow loop is the fallback path for these — the fast feed carries them
+     normally, but a watcher whose 1-minute fetch is failing still updates here. */
+  if(st.rule){ lastRule = st.rule; renderRule(); }
+  if(st.rule2){ lastRule2 = st.rule2; renderRule2(); }
+  if(st.rule3){ lastRule3 = st.rule3; renderRule3(); }
+  if(st.rule4){ lastRule4 = st.rule4; renderRule4(); }
+  if(st.rule5){ lastRule5 = st.rule5; renderRule5(); }
+  if(st.rule7){ lastRule7 = st.rule7; renderRule7(); }
+  if(st.sessions && st.sessions[state.symbol]){
+    lastSessions = st.sessions[state.symbol];
+    renderSessions();
+  }
+  if(st.notify) renderNotify(st.notify);
+  for(const [sym, info] of Object.entries(st.symbols||{}))
+    if(info && info.risk) lastRisk[sym] = lastRisk[sym] || info.risk;
+  renderRisk();
+  handleEvents(st.events);
+
+  /* A watcher left running across a code edit keeps building payloads with the
+     old code, while this template is re-read every render — so the page can show
+     half a feature with nothing anywhere saying why. */
+  if((st.stale_sources||[]).length){
+    const box = document.getElementById('warnbox');
+    if(!document.getElementById('stalewarn')){
+      const d = document.createElement('div');
+      d.id = 'stalewarn'; d.className = 'warn';
+      d.innerHTML = '<b>The server is running code from before '
+        + st.stale_sources.slice(0,3).join(', ')
+        + (st.stale_sources.length>3 ? ' and others' : '')
+        + ' changed.</b> Anything added to the report payload since it started is '
+        + 'missing from this page. Stop the watch.bat window and start it again.';
+      box.prepend(d);
+    }
+  }
+
+  /* A finished backtest for a symbol we hold -> pull the new payload in place. */
+  for(const [sym, run] of Object.entries(st.runs||{})){
+    if(seenRun[sym] === undefined){ seenRun[sym] = run; continue; }
+    if(seenRun[sym] === run) continue;
+    seenRun[sym] = run;
+    if(!BOOK.runs[sym] && sym !== state.symbol) continue;   /* fetch it lazily */
+    try{
+      const r = await fetch(`${payloadFile(sym)}?_=${Date.now()}`, {cache:'no-store'});
+      if(!r.ok) continue;
+      const fresh = await r.json();
+      BOOK.runs[sym] = fresh;
+      if(sym === state.symbol){
+        DATA = fresh;
+        if(!DATA.series[state.tf]) state.tf = defaultTf();
+        buildBar(); renderSide(); renderTrades(); draw();
+      } else { renderComparison(); }
+    }catch(e){ /* keep what we have */ }
+  }
+  if(st.comparison) { BOOK.comparison = st.comparison; renderComparison(); }
+}
+
+/* A static report opened from a directory a watcher happens to be serving would
+   otherwise show that watcher's entry conditions next to THIS page's strategy.
+   Candle patching is still fine — same instrument, same bars — but the Live
+   panel is config-specific, so it is only shown when the two agree. */
+function sameStrategy(st){
+  const mine = (DATA.strategy_name||'').split('@')[0];
+  const theirs = (st.strategy||'').split('@')[0];
+  return !theirs || !mine || mine === theirs;
+}
+function renderLive(st){
+  const feed = (st.symbols||{})[state.symbol];
+  if(!feed || !feed.live || !sameStrategy(st)){
+    document.getElementById('livesec').style.display='none'; return; }
+  const L = feed.live;
+  document.getElementById('livesec').style.display='block';
+  document.getElementById('livewhen').textContent =
+    st.version ? `${fmtTs(st.version)} ${TZS[state.tz].label}` : (st.updated_myt || '');
+  const dp = priceDp();
+  /* Two prices, deliberately separate. Everything below "close" is read off the
+     last CLOSED bar — that is what a signal is allowed to see. "price now" is
+     the forming bar and is display-only. */
+  const rows = [
+    ['price now', fmtN(livePrice[state.symbol] ?? feed.price ?? L.last_price, dp)],
+    ['last closed bar', L.last_closed_bar_ms
+        ? `${fmtTs(L.last_closed_bar_ms)} ${TZS[state.tz].label}`
+        : (L.last_closed_bar_myt || '-')],
+    ['close', fmtN(L.last_price, dp)],
+    ['UT level', fmtN(L.ut_level, dp)],
+    ['ATR 14', fmtN(L.atr_14, dp)],
+    ['RSI 14', fmtN(L.rsi_14,1)],
+    ['ADX 14', fmtN(L.adx_14,1)],
+  ];
+  document.getElementById('livetbl').innerHTML = rows.map(
+    ([k,v])=>`<tr><td class="muted">${k}</td><td>${v}</td></tr>`).join('');
+
+  const e = L.entry_would_fire || {};
+  const conds = e.conditions || {};
+  let html = e.fired
+    ? '<div class="ok"><b>&#9679; ENTRY CONDITIONS MET</b> on the last closed bar</div>'
+    : '<div class="dim">entry not met &mdash; blocking leg(s) below</div>';
+  html += '<table>' + Object.entries(conds).map(([k,v])=>
+    `<tr><td class="${v?'ok':'no'}">${v?'&#10003;':'&#10007;'} ${k}</td><td></td></tr>`
+  ).join('') + '</table>';
+  document.getElementById('liveconds').innerHTML = html;
+}
+
+/* ---------- the session map --------------------------------------------------
+   亚盘定范围，欧盘扫流动，美盘定方向 — the owner's intraday framework, drawn
+   as structure facts. A sweep is a poke that returned; a break is two closes
+   beyond; a reclaim is a break that returned. None of it is a direction, and
+   the panel says so, because on its own each line here looks exactly like an
+   entry recommendation and is not one. */
+let lastSessions = null;
+const SESS_STATE = {
+  waiting_asia:  'waiting for Asia bars',
+  in_range:      'inside the Asia range',
+  above_range:   'above the Asia range',
+  below_range:   'below the Asia range',
+  swept_high:    'Asia HIGH swept — liquidity taken above',
+  swept_low:     'Asia LOW swept — liquidity taken below',
+  broke_high:    'broke ABOVE the Asia range',
+  broke_low:     'broke BELOW the Asia range',
+};
+function renderSessions(){
+  const box = document.getElementById('sesssec');
+  const M = lastSessions;
+  if(!M || M.error){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('sesswhen').textContent =
+    `${M.day_myt||''} · ${M.phase||''}`;
+  const dp = priceDp();
+  const lv = M.levels||{};
+  let h = `<div><b>${esc(SESS_STATE[M.state]||M.state||'—')}</b>`+
+    (M.weekend?` <span class="dim">weekend — thin flow, not price discovery</span>`:'')+`</div>`;
+  // --- the day read: 亚盘 range / 欧盘 statement / 美盘 verdict -----------
+  const B = M.bias;
+  if(B){
+    const BL = {long:['看多 LONG','pos'], short:['看空 SHORT','neg'],
+                range:['震荡 RANGE','dim'], undecided:['— 未定','dim']}[B.bias]
+              || [B.bias,'dim'];
+    const when = B.phase==='asia' ? 'Asia: range by definition'
+      : B.phase==='europe' ? 'Europe statement — US verdict at '+B.verdict_myt+' MYT'
+      : (B.ready ? 'DAY VERDICT (from '+B.verdict_myt+' MYT)' : 'US verdict at '+B.verdict_myt+' MYT');
+    h += `<div style="margin-top:6px;display:flex;justify-content:space-between;`+
+         `align-items:baseline;gap:8px">`+
+         `<span class="dim" style="font-size:11px">${esc(when)}</span>`+
+         `<b class="${BL[1]}" style="font-size:15px">${BL[0]}</b></div>`;
+    h += `<div class="dim" style="font-size:10px;line-height:1.5;margin-top:2px">`+
+         (B.basis||[]).map(esc).join('<br>')+`</div>`;
+  }
+  h += '<table style="margin-top:5px">';
+  h += `<tr><td class="muted">Asia H / L</td><td>${fmtN(lv.asia_high,dp)} / ${fmtN(lv.asia_low,dp)}`+
+       (lv.asia_done?'':` <span class="dim">(building)</span>`)+`</td></tr>`;
+  h += `<tr><td class="muted">range</td><td>${fmtN(lv.asia_range,dp)}</td></tr>`;
+  h += `<tr><td class="muted">prev day H / L</td><td>${fmtN(lv.prev_day_high,dp)} / ${fmtN(lv.prev_day_low,dp)}</td></tr>`;
+  h += `<tr><td class="muted">prev US H / L</td><td>${fmtN(lv.prev_us_high,dp)} / ${fmtN(lv.prev_us_low,dp)}</td></tr>`;
+  if(M.us){
+    h += `<tr><td class="muted">US read</td><td>${esc(M.us.verdict)}`+
+         ` <span class="dim">(move ${fmtN(M.us.move,dp)} vs ${fmtN(M.us.threshold,dp)})</span></td></tr>`;
+  }
+  h += '</table>';
+  const evs = M.events||[];
+  if(evs.length){
+    h += '<div class="dim" style="font-size:11px;margin-top:7px">today, newest last:</div><table>';
+    for(const e of evs.slice(-8)){
+      const v = e.vol_ok==null ? '' :
+        (e.vol_ok ? ' <span class="ok">vol &#10003;</span>' : ' <span class="dim">vol &#10007;</span>');
+      h += `<tr><td class="dim" style="font-size:11px">${fmtTs(e.ts_ms)}</td>`+
+           `<td>${esc(e.type)} @ ${fmtN(e.price,dp)}${v}</td></tr>`;
+    }
+    h += '</table>';
+  }
+  h += `<div class="dim" style="font-size:10px;margin-top:7px;line-height:1.45">`+
+       `Asia 07:00–15:00 · Europe 15:00–20:00 · US 20:00–05:00 MYT. `+
+       `Sweep = poke that returned · break = 2 closes beyond (volume-flagged) · `+
+       `reclaim = a break that returned. Structure, not a signal.</div>`;
+  document.getElementById('sessbody').innerHTML = h;
+}
+
+
+/* ---------- the risk read ---------------------------------------------------
+   A port of RiskExecutiveEngine.kt. Two independent reads, one per direction,
+   because "is a long dangerous" and "is a short dangerous" are genuinely
+   different questions — a chop is dangerous both ways, a strong trend one way.
+
+   Everything drawn here is a DESCRIPTION, not a prediction. The weights
+   (40/30/30) are hand-set in the Kotlin and have never been measured on gold, so
+   the panel says so rather than letting a percentage imply a probability. What
+   IS measured is the rule in the Signal panel above it. */
+
+let lastRisk = {};      /* per symbol, from the fast feed */
+let lastRule = null;
+let lastRule2 = null;
+let lastRule3 = null;
+let lastRule4 = null;
+let lastRule5 = null;
+let lastRule7 = null;
+let seenEvents = new Set();
+let alertTimer = null;
+
+const TF_MS = {'1m':60000,'5m':300000,'15m':900000,'30m':1800000,
+               '1h':3600000,'4h':14400000,'1d':86400000};
+const dangerClass = v => v==null ? 'd0' : (v>=70?'d3':v>=50?'d2':v>=30?'d1':'d0');
+
+function meter(label, value, cls){
+  const v = (value==null||isNaN(value)) ? null : Math.round(value);
+  return `<div class="meter"><div class="lab"><span>${label}</span>`+
+    `<b>${v==null?'—':v+'%'}</b></div>`+
+    `<div class="track"><div class="fill ${cls}" style="width:${v==null?0:v}%"></div></div></div>`;
+}
+
+function riskSide(side, sc, gate){
+  if(!sc) return '';
+  const g = gate ? `<span class="gatepill ${gate.passed?'pass':'veto'}">`+
+    `${gate.passed?'GATE PASS':'GATE VETO'}</span>` : '';
+  let h = `<div class="rside ${side}"><h3>${side.toUpperCase()} ${g}</h3>`;
+  h += meter('danger', sc.danger, dangerClass(sc.danger));
+  h += meter('confidence', sc.confidence, 'c');
+  h += `<div class="facts">`+
+    `<div class="fact"><b>${sc.trend_pts}</b>trend /40</div>`+
+    `<div class="fact"><b>${sc.orderbook_pts}</b>zones /30</div>`+
+    `<div class="fact"><b>${sc.momentum_pts}</b>mom /30</div></div>`;
+  h += '<div class="why">' + (sc.reasons||[]).map(r=>{
+    const dg = r.polarity==='DANGER';
+    return `<div class="${dg?'dgr':'sup'}"><span class="ic">${dg?'!':'\u2713'}</span>`+
+           `<span>${esc(r.text)}</span></div>`;
+  }).join('') + '</div>';
+  return h + '</div>';
+}
+
+function renderRisk(){
+  const R = lastRisk[state.symbol];
+  const box = document.getElementById('risksec');
+  if(!R || R.error){
+    box.style.display = R && R.error ? 'block' : 'none';
+    if(R && R.error) document.getElementById('riskbody').innerHTML =
+      `<div class="dim">risk read unavailable — ${esc(R.error)}</div>`;
+    return;
+  }
+  box.style.display='block';
+  const m = R.meta||{}, gp = R.gate_preview||{};
+  document.getElementById('riskwhen').textContent =
+    `${m.anchor||''} · ${m.cached?'cached':'fresh'}`;
+
+  /* A live trading page showing an eight-hour-old bar as if it were current is
+     the worst failure this panel can have — every number below stays perfectly
+     plausible. So freshness is checked against the anchor's own interval and
+     said out loud, in the loudest style on the page. */
+  let h = '';
+  const step = TF_MS[m.anchor] || 900000;
+  if(m.bar_age_ms != null && m.bar_age_ms > 3*step){
+    h += `<div class="stale"><b>This feed is ${fmtDur(m.bar_age_ms)} behind.</b> `+
+      `The newest closed ${esc(m.anchor||'')} bar is from `+
+      `${m.last_closed_bar_ms?fmtTs(m.last_closed_bar_ms)+' '+TZS[state.tz].label:'?'}, `+
+      `so everything below describes THEN, not now. `+
+      (String(state.symbol).startsWith('MT5:')
+        ? 'Check the MT5 terminal is open, logged in, and has this symbol in Market Watch.'
+        : 'Check the watcher window for sync errors.')+
+      `</div>`;
+  }
+  /* Zones live on the H1 grid and are never newer than the last closed hour, so
+     a stale FEED makes them stale too and warning about that twice is noise.
+     What is worth saying is that the zone CACHE is behind the candles you
+     already have — that one is fixable, and only by building it. */
+  const zoneLag = (m.zones_stale_ms ?? 0) - Math.max(0, m.bar_age_ms ?? 0);
+  if(m.zones_stale_ms != null && zoneLag > 4*3600000){
+    h += `<div class="warm">KEY LEVELS are <b>${fmtDur(zoneLag)} behind the `+
+      `candles</b> — the zone cache is not built up to date. Zones still feed the `+
+      `30% factor, from where they were. Build it with `+
+      `<code>cli zones --symbol ${esc(state.symbol)}</code>.</div>`;
+  }
+  h += `<div style="margin-bottom:9px">bias `+
+    `<span class="biaspill ${R.bias}">${R.bias}</span>`+
+    `<span class="dim" style="margin-left:9px">bracket TP ${fmtN(R.tp_pct,2)}% / `+
+    `SL ${fmtN(R.sl_pct,2)}%</span></div>`;
+  h += `<div class="risk">${riskSide('long', R.long, gp.long)}`+
+       `${riskSide('short', R.short, gp.short)}</div>`;
+
+  const sim = R.historical_sim;
+  if(sim && sim.matches){
+    h += `<h2 style="margin:12px 0 5px">Past analogues</h2>`+
+      `<div class="dim" style="font-size:11px;line-height:1.5">`+
+      `${sim.matches} bars in the last ${esc(sim.lookback_label)} had the same `+
+      `EMA28 distance and RSI zone. Walked forward ${esc(sim.horizon_label)} to `+
+      `this bracket:</div><table style="margin-top:5px">`+
+      `<tr><td class="muted">long — stop hit first</td><td>`+
+        `${sim.long_sl_first_prob==null?'—':(sim.long_sl_first_prob*100).toFixed(0)+'%'}`+
+        ` <span class="dim">(${sim.long_sl_first}/${sim.long_sl_first+sim.long_tp_first})</span></td></tr>`+
+      `<tr><td class="muted">short — stop hit first</td><td>`+
+        `${sim.short_sl_first_prob==null?'—':(sim.short_sl_first_prob*100).toFixed(0)+'%'}`+
+        ` <span class="dim">(${sim.short_sl_first}/${sim.short_sl_first+sim.short_tp_first})</span></td></tr>`+
+      `</table>`;
+  }
+
+  if((R.tf_votes||[]).length){
+    h += `<h2 style="margin:12px 0 3px">Per timeframe</h2><table class="tfvote">`;
+    h += R.tf_votes.map(v=>{
+      const w = v.wick==='BEARISH_REJECTION' ? '<span class="neg">upper wick</span>'
+              : v.wick==='BULLISH_REJECTION' ? '<span class="pos">lower wick</span>' : '<span class="dim">—</span>';
+      const b = v.ut_bias>0?'<span class="pos">UT bull</span>'
+              : v.ut_bias<0?'<span class="neg">UT bear</span>':'<span class="dim">UT flat</span>';
+      return `<tr><td>${v.tf}${v.usable?'':' <span class="dim">(thin)</span>'}</td>`+
+             `<td style="text-align:right">${b} · ${w} · ${v.rel_vol}x</td></tr>`;
+    }).join('') + '</table>';
+  }
+
+  /* The single most important thing on this panel. A model — or a person —
+     reading "zones 30%" will otherwise reason about an order book that does not
+     exist anywhere in this project. */
+  h += `<div class="proxy"><b>What this is not.</b> There is <b>no order book</b> `+
+    `on this feed — the 30% "zones" factor uses this project's support/resistance `+
+    `levels as a stand-in for liquidity walls. `+
+    (R.missing_inputs && R.missing_inputs.length
+      ? `Also missing: ${R.missing_inputs.map(esc).join(', ')}. ` : '')+
+    `The 40/30/30 weights come from the Android app and have <b>never been `+
+    `measured on gold</b> — read Danger as a description, not a probability. `+
+    `${esc(R.data_confidence_note||'')}</div>`;
+
+  document.getElementById('riskbody').innerHTML = h;
+}
+
+/* ---------- the rule, and what the gate did to it --------------------------- */
+function renderRule(){
+  const r = lastRule;
+  const box = document.getElementById('rulesec');
+  if(!r || r.error){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('rulewhen').textContent =
+    `${r.symbol} ${r.anchor} · ${r.bar_myt||''}`;
+
+  let head;
+  if(r.sent) head = `<div style="color:var(--up);font-weight:700">&#9679; SIGNAL SENT</div>`;
+  else if(r.vetoed) head = `<div style="color:#E8873B;font-weight:700">&#9679; FIRED, VETOED BY THE RISK GATE</div>`;
+  else if(r.fired) head = `<div style="color:var(--gold);font-weight:700">&#9679; all legs true — ${esc(r.reason||'no free slot')}</div>`;
+  else head = `<div class="dim">not firing — blocking leg(s) below</div>`;
+
+  let h = head + '<table class="legs" style="margin-top:6px">';
+  h += Object.entries(r.legs||{}).map(([k,v])=>
+    `<tr><td class="${v?'ok':'no'}">${v?'&#10003;':'&#10007;'} ${esc(k)}</td><td></td></tr>`
+  ).join('') + '</table>';
+
+  if(r.entry_ref!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">entry ref</td><td>${fmtN(r.entry_ref, priceDp())}</td></tr>`+
+      `<tr><td class="muted">stop</td><td class="neg">${fmtN(r.sl, priceDp())}</td></tr>`+
+      `<tr><td class="muted">target</td><td class="pos">${fmtN(r.tp, priceDp())}</td></tr>`+
+      `<tr><td class="muted">size</td><td>${r.lots} lots</td></tr></table>`;
+  }
+  const g = r.gate;
+  if(g){
+    h += `<div style="margin-top:7px"><span class="gatepill ${g.passed?'pass':'veto'}">`+
+      `${g.passed?'GATE PASS':'GATE VETO'}</span> `+
+      `<span class="dim">danger ${g.danger} · confidence ${g.confidence} · bias ${g.bias}</span></div>`;
+    if((g.vetoes||[]).length)
+      h += `<div class="dim" style="font-size:11px;margin-top:3px">`+
+           g.vetoes.map(esc).join('<br>')+`</div>`;
+  }
+  h += `<div class="dim" style="font-size:10px;margin-top:8px;line-height:1.45">`+
+    `${esc(r.bracket||'')}. The RULE decides when (measured: +3.3 points against a `+
+    `matched random-entry null, n=588). The risk gate can only veto, never fire.</div>`;
+  document.getElementById('rulebody').innerHTML = h;
+}
+
+/* SIGNAL 2 -- the mined pattern, drawn in its own box and never merged into the
+   one above. It is a SHORT-only pattern fitted to the last three months and it
+   did not survive out-of-sample testing; the footer says so on the page rather
+   than only in the source, because a panel that looks identical to the measured
+   rule would be read as carrying the same evidence. */
+function renderRule2(){
+  const r = lastRule2;
+  const box = document.getElementById('rule2sec');
+  if(!r || r.error){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('rule2when').textContent =
+    `${r.symbol||''} ${r.anchor||''} · ${r.bar_myt||''}`;
+
+  const head = r.fired
+    ? `<div style="color:var(--down);font-weight:700">&#9679; SIGNAL 2 &mdash; SHORT setup</div>`
+    : `<div class="dim">not firing &mdash; blocking leg(s) below</div>`;
+
+  let h = head + '<table class="legs" style="margin-top:6px">';
+  h += Object.entries(r.legs||{}).map(([k,v])=>
+    `<tr><td class="${v?'ok':'no'}">${v?'&#10003;':'&#10007;'} ${esc(k)}</td><td></td></tr>`
+  ).join('') + '</table>';
+
+  if(r.minus_di!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">-DI</td><td>${fmtN(r.minus_di,1)}</td></tr>`+
+      `<tr><td class="muted">ADX</td><td>${fmtN(r.adx_14,1)}</td></tr>`+
+      `<tr><td class="muted">dist to UT</td><td>${fmtN(r.ut_distance_atr,2)} ATR</td></tr>`+
+      `</table>`;
+  }
+  if(r.entry_ref!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">entry ref</td><td>${fmtN(r.entry_ref, priceDp())}</td></tr>`+
+      `<tr><td class="muted">stop</td><td class="neg">${fmtN(r.sl, priceDp())}</td></tr>`+
+      `<tr><td class="muted">target</td><td class="pos">${fmtN(r.tp, priceDp())}</td></tr>`+
+      `<tr><td class="muted">size</td><td>${r.lots} lots</td></tr></table>`;
+  }
+  h += `<div class="dim" style="font-size:10px;margin-top:8px;line-height:1.45">`+
+    `${esc(r.bracket||'')}.<br>`+
+    `<b style="color:#E8873B">Mined, NOT measured.</b> Fitted to 2026-05-28&rarr;08-26 only `+
+    `(25 trades, 90.5%). Chosen from 555,000+ tested conditions on ~332 independent `+
+    `trades, and on MT5:GOLD over a different 13 months it scored 47.8% vs a 48.9% `+
+    `baseline. Watch it; it carries none of the evidence the Signal above does.</div>`;
+  document.getElementById('rule2body').innerHTML = h;
+}
+
+/* SIGNAL 3 v2 -- the double-sweep/fake-break reversal (15m) + ExpD
+   fallback. Fully symmetric: quiet sweep of a swing LOW = long, quiet
+   fake-break of a swing HIGH = short, zone-width brackets, flip on zone
+   break. Falls back to Signal 7's ExpD gate when no pattern is active. */
+function renderRule3(){
+  const r = lastRule3;
+  const box = document.getElementById('rule3sec');
+  if(!r || r.error){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('rule3when').textContent =
+    `${r.symbol||''} ${r.day_myt||''} · ${r.bar_myt||''} · mode: `+
+    `${r.mode||'—'}`;
+
+  const arrow = r.side==='long' ? '&#8599;' : r.side==='short' ? '&#8600;' : '';
+  const modeTag = r.mode==='sweep' ? 'SWEEP PATTERN' :
+                  r.mode==='expd' ? 'ExpD FALLBACK' : '';
+  const head = r.fired
+    ? `<div style="color:var(--gold);font-weight:700">&#9679; SIGNAL 3 `+
+      `${arrow} ${String(r.side||'').toUpperCase()} &mdash; ${modeTag}</div>`
+    : `<div class="dim">${esc(r.reason||'no pattern active')}</div>`;
+
+  let h = head;
+  /* The legs table must match what actually happened: a sweep that WAS
+     detected but stopped by the zone floor is not a plain ✗ "sweep
+     pattern" — that contradicted the near-miss box below it. Non-boolean
+     legs (e.g. "not required — fallback fired") render as N/A notes. */
+  h += '<table class="legs" style="margin-top:6px">';
+  h += Object.entries(r.legs||{}).map(([k,v])=>{
+    let cell, cls;
+    if(v===true){ cell=`&#10003; ${esc(k)}`; cls='ok'; }
+    else if(v===false){
+      cls='no';
+      cell = (k==='sweep pattern' && r.sweep_filtered)
+        ? `&#9888; ${esc(k)} &mdash; detected, filtered: `+
+          `${esc(r.sweep_filtered)}`
+        : `&#10007; ${esc(k)}`;
+    } else { cell=`${esc(k)} &mdash; ${esc(String(v))}`; cls='dim'; }
+    return `<tr><td class="${cls}">${cell}</td><td></td></tr>`;
+  }
+  ).join('') + '</table>';
+
+  if(r.entry_ref!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">entry ref</td><td>${fmtN(r.entry_ref, priceDp())}</td></tr>`+
+      `<tr><td class="muted">stop</td><td class="neg">${fmtN(r.sl, priceDp())}</td></tr>`+
+      `<tr><td class="muted">target</td><td class="pos">${fmtN(r.tp, priceDp())}</td></tr>`;
+    if(r.swing_level!=null){
+      h += `<tr><td class="muted">swing level</td><td>${fmtN(r.swing_level, priceDp())}</td></tr>`+
+        `<tr><td class="muted">zone width</td><td>${fmtN(r.zone_width, priceDp())}</td></tr>`;
+    }
+    if(r.p_win!=null){
+      h += `<tr><td class="muted">P(win)/thr</td><td>${fmtN(r.p_win,2)}/`+
+        `${fmtN(r.threshold,2)} (${esc(r.regime||'')})</td></tr>`;
+    }
+    h += `<tr><td class="muted">size</td><td>${r.lots} lots</td></tr></table>`;
+  }
+  const contribs = r.contributions || [];
+  if(contribs.length){
+    h += `<div class="dim" style="font-size:11px;margin-top:7px">`+
+         `gate conditions:</div><table class="legs" style="margin-top:2px">`;
+    for(const [k,v] of contribs){
+      h += `<tr><td class="${v>0?'ok':'no'}">${v>0?'&#9650;':'&#9660;'} `+
+           `${esc(k)}</td><td>${v>0?'+':''}${v.toFixed(2)}</td></tr>`;
+    }
+    h += '</table>';
+  }
+
+  /* A sweep that was detected but filtered by the zone-width floor is
+     shown as a near-miss — the signal existed, the filter said no. */
+  if(r.sweep_filtered){
+    const sd = r.sweep_detail || {};
+    h += `<div style="margin-top:7px;padding:5px 8px;border:1px dashed `+
+         `var(--dim);border-radius:5px;font-size:11px">`+
+         `<span class="dim">sweep detected but filtered:</span> `+
+         `<b>${esc(r.sweep_filtered)}</b><br>`;
+    if(sd.swing_level!=null){
+      h += `<span class="dim">${esc(sd.event_type||'')} ${esc(sd.side||'')}`+
+           ` · swing ${fmtN(sd.swing_level, priceDp())}`+
+           ` · zone ${fmtN(sd.zone_width, priceDp())}`+
+           ` · breaks ${sd.break_count||'?'} · TF ${esc(sd.adaptive_tf||'')}`+
+           `</span>`;
+    }
+    h += '</div>';
+  }
+  h += `<div class="dim" style="font-size:10px;margin-top:8px;line-height:1.45">`+
+    `${esc(r.bracket||'')}.<br>`+
+    `<b style="color:#E8873B">UNMEASURED — framework port, no walk-forward `+
+    `evidence.</b> The sweep/fake-break patterns are the owner's own rules `+
+    `mechanised on 15m swings; the ExpD fallback inherits Signal 7's `+
+    `walk-forward numbers but the combination has none. Tested on the `+
+    `walker after shipping.</div>`;
+  document.getElementById('rule3body').innerHTML = h;
+}
+
+/* SIGNAL 4 -- refitted weekly against the last five trading days, so unlike the
+   others its thresholds arrive from `configs/signal4.json` rather than being
+   fixed. The footer therefore reports the FITTED provenance carried in that
+   file (when, how many days, how many conditions were tried) instead of a
+   hard-coded sentence -- a refit that changed the numbers but not the caption
+   would be worse than no caption.
+
+   Its bracket is ASYMMETRIC: TP 15 / SL 25, so break-even is 63.5%, not ~51%.
+   The panel says so next to the win rate, because a 70% here and a 70% on
+   Signal 2 mean opposite things. */
+
+/* Whether push notifications are live, shown next to the clock. Configuring
+   this took a revoked token and a TLS diagnosis, and at the end of it there was
+   still no way to SEE that it worked -- the confirmation line had scrolled away.
+   A red dot here is the difference between "not notifying" and "notifying, but
+   nothing has fired yet", which otherwise look identical. */
+function renderNotify(n){
+  let el = document.getElementById('notifystate');
+  if(!el){
+    const host = document.getElementById('rulewhen');
+    if(!host || !host.parentElement) return;
+    el = document.createElement('span');
+    el.id = 'notifystate';
+    el.style.cssText = 'font-size:10px;margin-left:8px;font-weight:600';
+    host.parentElement.appendChild(el);
+  }
+  const on = n.backend === 'TelegramNotifier';
+  const ch = (n.channels||[]).length;
+  el.style.color = on ? 'var(--up)' : '#E8873B';
+  el.textContent = on
+    ? `● Telegram · ${ch} channel${ch===1?'':'s'}`
+        + (n.failed ? ` · ${n.failed} failed` : '')
+    : '● not notifying';
+  el.title = on
+    ? `Pushing: ${(n.channels||[]).join(', ')}. Sent ${n.sent||0}, failed ${n.failed||0}.`
+    : 'No Telegram credentials loaded - run 3_設定手機通知.bat';
+}
+
+/* SIGNAL 5 -- FAST-C. The one pattern here that scored BETTER out of sample
+   than in, which is the opposite of what overfitting does, so the footer leads
+   with that comparison rather than with a single win rate.
+
+   It is also the only one that needs MORE THAN ONE OPEN POSITION: its frequency
+   is quoted at a cap of 3, and at one-at-a-time the frequency (and the point of
+   it) collapses. The panel says the cap out loud for that reason. */
+
+/* SIGNAL 4 -- refitted weekly against the last five trading days, so unlike the
+   others its thresholds arrive from `configs/signal4.json` rather than being
+   fixed. The footer therefore reports the FITTED provenance carried in that
+   file (when, how many days, how many conditions were tried) instead of a
+   hard-coded sentence -- a refit that changed the numbers but not the caption
+   would be worse than no caption.
+
+   Its bracket is ASYMMETRIC: TP 15 / SL 25, so break-even is 63.5%, not ~51%.
+   The panel says so next to the win rate, because a 70% here and a 70% on
+   Signal 2 mean opposite things. */
+function renderRule4(){
+  const r = lastRule4;
+  const box = document.getElementById('rule4sec');
+  if(!r){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('rule4when').textContent =
+    `${r.symbol||''} ${r.anchor||''} · ${r.bar_myt||''}`;
+
+  const f = r.fitted || {};
+  if(!r.pattern){
+    document.getElementById('rule4body').innerHTML =
+      `<div class="dim">${esc(r.reason||'no config')}</div>`;
+    return;
+  }
+  const up = String(r.side).toLowerCase()==='long';
+  const head = r.fired
+    ? `<div style="color:${up?'var(--up)':'var(--down)'};font-weight:700">`+
+      `&#9679; SIGNAL 4 &mdash; ${esc(String(r.side).toUpperCase())} setup</div>`
+    : `<div class="dim">not firing &mdash; blocking leg(s) below</div>`;
+
+  let h = head + '<table class="legs" style="margin-top:6px">';
+  h += Object.entries(r.legs||{}).map(([k,v])=>
+    `<tr><td class="${v?'ok':'no'}">${v?'&#10003;':'&#10007;'} ${esc(k)}</td><td></td></tr>`
+  ).join('') + '</table>';
+
+  const rd = r.readings || {};
+  if(Object.keys(rd).length){
+    h += `<table style="margin-top:7px">` + Object.entries(rd).map(([k,v])=>
+      `<tr><td class="muted">${esc(k)}</td><td>${v==null?'—':fmtN(v,3)}</td></tr>`
+    ).join('') + `</table>`;
+  }
+  if(r.entry_ref!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">entry ref</td><td>${fmtN(r.entry_ref, priceDp())}</td></tr>`+
+      `<tr><td class="muted">stop</td><td class="neg">${fmtN(r.sl, priceDp())}</td></tr>`+
+      `<tr><td class="muted">target</td><td class="pos">${fmtN(r.tp, priceDp())}</td></tr>`+
+      `<tr><td class="muted">size</td><td>${r.lots} lots</td></tr></table>`;
+  }
+  let prov = '';
+  if(f.win_rate!=null){
+    prov = `Refit ${esc((f.at_utc||'').slice(0,10))} on ${f.n_days||'?'} trading days `+
+           `(${esc((f.days||[]).join(', '))}): <b>${(f.win_rate*100).toFixed(1)}%</b> `+
+           `over ${f.trades} trades (${f.wins}W/${f.losses}L/${f.timeouts}T), `+
+           `${f.per_day}/day, net ${f.net>0?'+':''}${f.net}. `+
+           `Chosen from <b>${(f.conditions_tested||0).toLocaleString()}</b> tested conditions.`;
+  }
+  h += `<div class="dim" style="font-size:10px;margin-top:8px;line-height:1.45">`+
+    `${esc(r.bracket||'')}<br>`+
+    `<b style="color:#E8873B">Mined weekly, NOT measured.</b> ${prov}<br>`+
+    `Break-even here is <b>63.5%</b> because the stop is wider than the target &mdash; `+
+    `a 70% win rate would be barely profitable, unlike on the other signals. `+
+    `Five days is a very small sample; treat the number as this week's fit, not an edge.</div>`;
+  document.getElementById('rule4body').innerHTML = h;
+}
+
+/* SIGNAL 5 -- FAST-C. The one pattern here that scored BETTER out of sample
+   than in, which is the opposite of what overfitting does, so the footer leads
+   with that comparison rather than with a single win rate.
+
+   It is also the only one that needs MORE THAN ONE OPEN POSITION: its frequency
+   is quoted at a cap of 3, and at one-at-a-time the frequency (and the point of
+   it) collapses. The panel says the cap out loud for that reason. */
+function renderRule5(){
+  const r = lastRule5;
+  const box = document.getElementById('rule5sec');
+  if(!r || r.error){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('rule5when').textContent =
+    `${r.symbol||''} ${r.anchor||''} · ${r.bar_myt||''}`;
+
+  const head = r.fired
+    ? `<div style="color:var(--down);font-weight:700">&#9679; SIGNAL 5 &mdash; SHORT (fast, ~30 min)</div>`
+    : `<div class="dim">not firing &mdash; blocking leg(s) below</div>`;
+
+  let h = head + '<table class="legs" style="margin-top:6px">';
+  h += Object.entries(r.legs||{}).map(([k,v])=>
+    `<tr><td class="${v?'ok':'no'}">${v?'&#10003;':'&#10007;'} ${esc(k)}</td><td></td></tr>`
+  ).join('') + '</table>';
+
+  if(r.atr_14!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">ATR 14 (5m)</td><td>${fmtN(r.atr_14,2)}</td></tr>`+
+      `<tr><td class="muted">30m MACD hist</td><td>${fmtN(r.macd_hist_30m,3)}</td></tr>`+
+      `<tr><td class="muted">4h ADX</td><td>${fmtN(r.adx_4h,1)}</td></tr></table>`;
+  }
+  if(r.entry_ref!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">entry ref</td><td>${fmtN(r.entry_ref, priceDp())}</td></tr>`+
+      `<tr><td class="muted">stop</td><td class="neg">${fmtN(r.sl, priceDp())}</td></tr>`+
+      `<tr><td class="muted">target</td><td class="pos">${fmtN(r.tp, priceDp())}</td></tr>`+
+      `<tr><td class="muted">size</td><td>${r.lots} lots</td></tr></table>`;
+  }
+  h += `<div class="dim" style="font-size:10px;margin-top:8px;line-height:1.45">`+
+    `${esc(r.bracket||'')}<br>`+
+    `<b style="color:var(--up)">Held up out of sample.</b> Discovery 90d: 16.6/day, `+
+    `<b>53.41%</b>, +0.32/trade, p=0.139. Holdout 80d (never fitted): 16.7/day, `+
+    `<b>55.50%</b>, +0.71/trade, p=0.0054. It got BETTER where it was not fitted `+
+    `&mdash; overfitting does the reverse. Positive in all 5 blocks of history.<br>`+
+    `<b style="color:#E8873B">But it is a 2-3 point edge, not a high win rate.</b> `+
+    `Break-even is 52.0%, and shorting every bar scored 51.2%/52.4% in those same `+
+    `windows &mdash; so the real lift is +2.2 and +3.1 points. Needs up to `+
+    `<b>${r.max_concurrent||3} positions open at once</b>; at one at a time the `+
+    `frequency collapses and so does the point of it.</div>`;
+  document.getElementById('rule5body').innerHTML = h;
+}
+
+/* SIGNAL 6 -- the session framework port: sweeps and volume-confirmed breaks
+   of the Asia range, with structure-based brackets. It is the ONLY channel on
+   this page that neither emerged from data mining nor was measured -- the
+   brackets come from the owner's framework document, applied as written. The
+   footer says what that is worth, because a panel shaped like the measured
+   rule's would be read as carrying the same evidence, and it carries none. */
+
+/* SIGNAL 7 -- the ExpD regime gate, running beside Signal 6 as an
+   EXPERIMENTAL channel to accumulate the forward record. Same events,
+   same brackets; the difference is WHO decides: a logistic P(win) over
+   35 features with per-regime acceptance thresholds, re-fit quarterly on
+   past data only. It is the only channel here whose history lane is a
+   walk-forward (never fitted on what it shows). */
+function renderRule7(){
+  const r = lastRule7;
+  const box = document.getElementById('rule7sec');
+  if(!r || r.error){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('rule7when').textContent =
+    `${r.symbol||''} ${r.day_myt||''} · ${r.bar_myt||''}`;
+
+  const arrow = r.side==='long' ? '&#8599;' : r.side==='short' ? '&#8600;' : '';
+  const head = r.fired
+    ? `<div style="color:#39D3C3;font-weight:700">&#9679; SIGNAL 7 &mdash; `+
+      `${String(r.side||'').toUpperCase()} ${arrow} ${esc(r.event_type||'')} `+
+      `P(win)=${fmtN(r.p_win,2)} &ge; ${fmtN(r.threshold,2)} (${esc(r.regime||'')})</div>`
+    : `<div class="dim">${esc(r.reason||'gate rejecting — nothing clears '+
+      'its regime threshold')}</div>`;
+
+  let h = head;
+  h += '<table class="legs" style="margin-top:6px">';
+  h += Object.entries(r.legs||{}).map(([k,v])=>
+    `<tr><td class="${v?'ok':'no'}">${v?'&#10003;':'&#10007;'} ${esc(k)}</td><td></td></tr>`
+  ).join('') + '</table>';
+
+  /* The model's CONDITIONS: each feature's signed contribution to the
+     logit — what actually moved P(win), in the order it moved it. Same
+     numbers the decision used; a gate that cannot show this is a black
+     box on a page whose whole design is "show why". */
+  const contribs = r.contributions || [];
+  if(contribs.length){
+    h += `<div class="dim" style="font-size:11px;margin-top:7px">`+
+         `gate conditions — signed logit contributions:</div>`;
+    h += '<table class="legs" style="margin-top:2px">';
+    for(const [k,v] of contribs){
+      const cls = v > 0 ? 'ok' : 'no';
+      const sign = v > 0 ? '+' : '';
+      h += `<tr><td class="${cls}">${v>0?'&#9650;':'&#9660;'} `+
+           `${esc(k)}</td><td>${sign}${v.toFixed(2)}</td></tr>`;
+    }
+    h += '</table>';
+  }
+
+  if(r.entry_ref!=null){
+    h += `<table style="margin-top:7px">`+
+      `<tr><td class="muted">entry ref</td><td>${fmtN(r.entry_ref, priceDp())}</td></tr>`+
+      `<tr><td class="muted">stop</td><td class="neg">${fmtN(r.sl, priceDp())}</td></tr>`+
+      `<tr><td class="muted">target</td><td class="pos">${fmtN(r.tp, priceDp())}</td></tr>`+
+      `<tr><td class="muted">P(win) / threshold</td><td>${fmtN(r.p_win,2)} / `+
+      `${fmtN(r.threshold,2)} (${esc(r.regime||'')})</td></tr>`+
+      `<tr><td class="muted">Asia range (R)</td><td>${fmtN(r.asia_range, priceDp())}</td></tr>`+
+      `<tr><td class="muted">size</td><td>${r.lots} lots</td></tr></table>`;
+  }
+  h += `<div class="dim" style="font-size:10px;margin-top:8px;line-height:1.45">`+
+    `${esc(r.bracket||'')}.<br>`+
+    `<b style="color:#39D3C3">EXPERIMENTAL — forward record in progress.</b> `+
+    `Capped-threshold walk-forward (cap 0.50, replicated on MT5/PAXG/Bybit): `+
+    `MT5 227 trades · 57.7% · +4013; Bybit quarterly cross-feed 101 · `+
+    `51.5% · +329. Trades cluster (median gap hours, not days); long `+
+    `droughts = the gate closing in weak legs. Runs beside Signal 6 to `+
+    `accumulate real-time OOS evidence; promotion is gated on the paper `+
+    `record (n&#8805;30 settled, win&#8805;52%), not on how good this `+
+    `looks. The rail lane is walk-forward history — never fitted on what `+
+    `it shows.</div>`;
+  document.getElementById('rule7body').innerHTML = h;
+}
+
+/* ---------- the signal alert ------------------------------------------------
+   Fires once per emitted signal id. `seenEvents` is seeded from the first poll
+   rather than left empty, or opening the page would replay every signal still in
+   the log as if it had just happened. */
+let eventsSeeded = false;
+function handleEvents(list){
+  if(!Array.isArray(list)) return;
+  if(!eventsSeeded){ list.forEach(e=>seenEvents.add(e.id)); eventsSeeded=true; return; }
+  const fresh = list.filter(e=>!seenEvents.has(e.id));
+  fresh.forEach(e=>seenEvents.add(e.id));
+  if(fresh.length) showAlert(fresh[fresh.length-1]);
+}
+
+function showAlert(e){
+  const box=document.getElementById('alert');
+  box.classList.remove('veto');
+  if(e.kind==='session'){
+    /* A session event must not read like a signal. Same box, different shape:
+       it names what the market did to a level, and says in plain words that
+       there is nothing here to act on by itself. */
+    if(e.type==='day_verdict'){
+      const BL = {long:['看多 LONG','pos'], short:['看空 SHORT','neg'],
+                  range:['震荡 RANGE','dim']}[e.bias] || [e.bias,'dim'];
+      document.getElementById('alerth').innerHTML =
+        `日内判定 — ${esc(e.symbol)} <b class="${BL[1]}">${BL[0]}</b>`;
+      document.getElementById('alertb').innerHTML =
+        `<div class="row"><span>${(e.basis||[]).slice(0,3)
+          .map(esc).join(' · ')}</span></div>`+
+        `<div class="dim" style="font-size:11px">as of ${esc(e.bar_myt||'')} · `+
+        `framework read, not a signal — 美盘定方向，数据前不赌</div>`;
+      box.style.display='block';
+      beep();
+      clearTimeout(alertTimer);
+      alertTimer = setTimeout(()=>{ box.style.display='none'; }, 60000);
+      return;
+    }
+    document.getElementById('alerth').textContent =
+      `SESSION — ${e.symbol} ${String(e.type).toUpperCase()}`;
+    const vol = e.vol_ok==null ? '' :
+      `<span>volume <b>${e.vol_ok?'confirmed':'NOT confirmed'}</b></span>`;
+    document.getElementById('alertb').innerHTML =
+      `<div class="row"><span>price <b>${fmtN(e.price,2)}</b></span>`+
+      `<span>level <b>${fmtN(e.level,2)}</b></span>${vol}</div>`+
+      `<div class="dim" style="font-size:11px">bar ${esc(e.bar_myt||'')} · `+
+      `structure, not a signal — the framework's own rule is 扫盘不追单</div>`;
+    box.style.display='block';
+    beep();
+    clearTimeout(alertTimer);
+    alertTimer = setTimeout(()=>{ box.style.display='none'; }, 60000);
+    return;
+  }
+  document.getElementById('alerth').textContent =
+    `SIGNAL — ${e.symbol} ${String(e.side).toUpperCase()} ${e.lots} lots`;
+  const g=e.gate||{};
+  document.getElementById('alertb').innerHTML =
+    `<div class="row"><span>entry <b>${fmtN(e.entry_ref,2)}</b></span>`+
+    `<span>stop <b>${fmtN(e.sl,2)}</b></span>`+
+    `<span>target <b>${fmtN(e.tp,2)}</b></span>`+
+    `<span>danger <b>${g.danger??'—'}</b></span>`+
+    `<span>confidence <b>${g.confidence??'—'}</b></span></div>`+
+    `<div class="dim" style="font-size:11px">signal bar ${esc(e.bar_myt||'')} · `+
+    `${esc(e.bracket||'')} · the fill is the NEXT bar's open</div>`;
+  box.style.display='block';
+  beep();
+  clearTimeout(alertTimer);
+  /* Long, but not forever: this is the one thing on the page you must not miss,
+     and it stays until dismissed only if you are away from the keyboard. */
+  alertTimer = setTimeout(()=>{ box.style.display='none'; }, 120000);
+}
+document.getElementById('alertx').onclick = ()=>{
+  document.getElementById('alert').style.display='none'; clearTimeout(alertTimer); };
+
+/* A short two-tone chime, synthesised rather than shipped as a file — this page
+   is self-contained and a base64 wav would be most of its size. */
+let audioCtx = null;
+function beep(){
+  if(!state.sound) return;
+  try{
+    audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    [[880,0],[1320,.18]].forEach(([f,at])=>{
+      const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+      o.type='sine'; o.frequency.value=f;
+      const t0=audioCtx.currentTime+at;
+      g.gain.setValueAtTime(0,t0);
+      g.gain.linearRampToValueAtTime(.28,t0+.02);
+      g.gain.exponentialRampToValueAtTime(.0001,t0+.30);
+      o.connect(g); g.connect(audioCtx.destination); o.start(t0); o.stop(t0+.32);
+    });
+  }catch(err){ /* no audio device, or autoplay blocked until a click */ }
+}
+
+/* ---------- keep awake ------------------------------------------------------
+   Two locks, because neither alone is enough:
+
+   * `navigator.wakeLock` stops the BROWSER blanking the screen, but the browser
+     releases it the instant the tab is hidden — minimise the window and the
+     display timer starts again. It also has to be re-requested after every
+     visibility change, which is what the listener below is for.
+   * `/api/awake` holds `SetThreadExecutionState` in the watcher process, which
+     is what actually stops Windows' display and sleep timers regardless of what
+     the browser is doing.
+
+   Neither overrides the workstation lock, a lid close, or battery saver, and the
+   button's tooltip says so rather than promising more than it can do. */
+let wakeLock = null;
+async function setAwake(on){
+  state.awake = on;
+  localStorage.setItem('awake', on ? '1' : '0');
+  try{
+    if(on){
+      if('wakeLock' in navigator && !wakeLock){
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', ()=>{ wakeLock = null; });
+      }
+    } else if(wakeLock){ await wakeLock.release(); wakeLock = null; }
+  }catch(err){ /* denied, or the tab is not visible — the server half still works */ }
+  try{ await fetch('api/awake?on='+(on?1:0), {cache:'no-store'}); }
+  catch(err){ /* opened as a file:// report, not served — browser lock only */ }
+  paintAwake();
+}
+function paintAwake(){
+  const b=document.getElementById('awake');
+  b.classList.toggle('on', !!state.awake);
+  b.textContent = (state.awake ? '\u2615 Awake ON' : '\u2615 Keep awake');
+}
+document.addEventListener('visibilitychange', ()=>{
+  /* The lock is dropped whenever the tab is hidden and is NOT restored on its
+     own. Without this, minimising once silently turns the feature off. */
+  if(state.awake && document.visibilityState === 'visible' && !wakeLock) setAwake(true);
+});
+
+/* ---------- copy analysis ---------------------------------------------------
+   Built by the server, not here: it needs the database (open positions, the KEY
+   LEVELS card, the signal log), none of which is in the page's payload. */
+function toast(msg, ms){
+  const t=document.getElementById('copytoast');
+  t.textContent=msg; t.style.display='block';
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{t.style.display='none'}, ms||2600);
+}
+async function copyAnalysis(){
+  const btn=document.getElementById('copyan');
+  btn.disabled=true; btn.textContent='\u23F3 building…';
+  try{
+    const r = await fetch('api/analysis?symbol='+encodeURIComponent(state.symbol),
+                          {cache:'no-store'});
+    if(!r.ok) throw new Error('server said '+r.status);
+    const text = await r.text();
+    let ok=false;
+    try{ await navigator.clipboard.writeText(text); ok=true; }
+    catch(err){
+      /* Clipboard API needs a secure context AND a user gesture; a fallback that
+         actually works beats an error message telling you it did not. */
+      const ta=document.createElement('textarea');
+      ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.select();
+      ok = document.execCommand('copy'); document.body.removeChild(ta);
+    }
+    toast(ok ? `Copied ${(text.length/1024).toFixed(1)} KB — paste it into your AI`
+             : 'Could not reach the clipboard. Open api/analysis in a tab instead.', 4200);
+  }catch(err){
+    toast('Could not build it: '+err.message+'. Is watch.bat still running?', 5000);
+  }finally{ btn.disabled=false; btn.textContent='\u{1F4CB} Copy analysis'; }
+}
+
+function esc(v){
+  return String(v==null?'':v).replace(/[&<>"']/g, c=>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------- wiring ---------- */
+/* Wall clock in both zones. On a live chart the question is usually "has New
+   York opened yet" — the answer moves by an hour twice a year, so the offset is
+   read from the zone rather than assumed. */
+function tickClock(){
+  const now = Date.now();
+  document.getElementById('clock').textContent =
+    `${tzParts(now,'MYT').slice(11)} MYT  ·  ${tzParts(now,'NY').slice(11)} ${tzAbbr(now,'NY')}`;
+}
+tickClock(); setInterval(tickClock, 1000);
+
+document.getElementById('measure').onclick=()=>{
+  state.measureMode=!state.measureMode;
+  cv.classList.toggle('measuring', state.measureMode);
+  if(!state.measureMode) state.measure=null;
+  buildBar(); draw();
+};
+document.getElementById('now').onclick=()=>{state.userMoved=true;goLive()};
+document.getElementById('awake').onclick=()=>setAwake(!state.awake);
+document.getElementById('copyan').onclick=copyAnalysis;
+document.getElementById('oirefresh').onclick=refreshOI;
+document.getElementById('s4refit').onclick=refitSignal4;
+document.getElementById('details').onclick=()=>{
+  state.details=!state.details;
+  localStorage.setItem('details', state.details?'1':'0');
+  paintDetails();
+  if(!state.details) tip.style.display='none';
+};
+function paintDetails(){
+  const b=document.getElementById('details');
+  b.classList.toggle('on', state.details);
+  b.innerHTML = state.details ? '&#8505; Details ON' : '&#8505; Details';
+}
+document.getElementById('sound').onclick=()=>{
+  state.sound=!state.sound;
+  localStorage.setItem('sound', state.sound?'1':'0');
+  const b=document.getElementById('sound');
+  b.classList.toggle('on', state.sound);
+  b.innerHTML = state.sound ? '&#128266; Sound' : '&#128263; Muted';
+  /* Browsers only allow audio after a gesture. Playing the chime on the click
+     that enables it both confirms the setting and unlocks the audio context, so
+     the first real signal is not the one that gets silently swallowed. */
+  if(state.sound) beep();
+};
+document.getElementById('fit').onclick=()=>{
+  state.userMoved=true;
+  const s=S();state.count=s.n;state.start=0;state.follow=false;draw();};
+document.getElementById('prev').onclick=()=>{state.userMoved=true;stepTrade(-1)};
+document.getElementById('next').onclick=()=>{state.userMoved=true;stepTrade(1)};
+window.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') stepTrade(1);
+  if(e.key==='ArrowLeft') stepTrade(-1);
+  if(e.key==='Escape'){ state.measure=null; state.measureMode=false;
+    cv.classList.remove('measuring'); buildBar(); draw(); }
+  if(e.key==='m'||e.key==='M') document.getElementById('measure').click();
+});
+window.addEventListener('resize', resize);
+
+state.tf = defaultTf();
+buildBar(); renderSide(); renderTrades();
+{
+  const sb=document.getElementById('sound');
+  sb.classList.toggle('on', state.sound);
+  sb.innerHTML = state.sound ? '&#128266; Sound' : '&#128263; Muted';
+}
+paintAwake();
+paintDetails();
+if(state.awake) setAwake(true);   /* the setting survives a reload */
+if(DATA.trades.length) focusTrade(DATA.trades[DATA.trades.length-1]);
+
+pollStatus(); pollLive();
+statusTimer = setInterval(pollStatus, 15000);
+liveTimer   = setInterval(pollLive, 5000);
+
+/* A ResizeObserver rather than a one-shot call: the first layout pass can report
+   a zero-width chart (parsing ~5 MB of embedded data delays it), which would
+   leave the canvas backing store at 1x1 and the chart permanently blank. The
+   observer fires again once the real size is known and every time the pane
+   changes, so it self-corrects instead of depending on load timing. */
+if(window.ResizeObserver){
+  new ResizeObserver(resize).observe(document.getElementById('chart'));
+} else {
+  requestAnimationFrame(resize);
+}
+resize();
+</script>
+</body>
+</html>

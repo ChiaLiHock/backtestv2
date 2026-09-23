@@ -1,0 +1,18 @@
+__pycache__/
+.venv/
+*.pyc
+.pytest_cache/
+data/market.db*
+runs/
+reports/
+charts/
+tools/golden/
+*.png
+
+# never commit a bot token
+notify/telegram.env
+
+# The AI analysis journal: written by tools/analysis_tick.py on a schedule.
+# Kept out of git for the same reason reports/ is - it is generated, it grows
+# daily, and it is specific to one machine's live session.
+reports/analysis/

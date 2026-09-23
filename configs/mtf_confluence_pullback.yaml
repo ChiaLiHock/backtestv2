@@ -1,0 +1,163 @@
+# mtf_confluence_pullback — the trigger specified in docs/ENTRY_RULES.md
+#
+# ⛔ THIS CONFIG DOES NOT RUN YET. It is the target artifact, written first so the
+#    engine work has something concrete to satisfy. Four things are missing:
+#
+#      1. tf_<interval>_ut_* / tf_<interval>_ema_stack_*   (ENTRY_RULES §8.1)
+#      2. pullback_reclaim_long / _short                   (ENTRY_RULES §8.2)
+#      3. entry.side: both                                 (ENTRY_RULES §8.3)
+#      4. exit.partial + trailing.mode: chandelier         (ENTRY_RULES §8.4)
+#
+#    Running it today raises KeyError on the first unknown signal_id.
+#
+# THE IDEA, in one line: every timeframe's UT Dynamic Level agrees, the 4H EMA stack
+# agrees with it, and price has just dipped to the 15m EMA-14 and closed back through
+# it. The alignment is the edge; the dip only decides when to act on it.
+#
+# Measured pooled long+short win rate against a 49.8% coin-flip baseline:
+#     XAUUSDT  15m  166d              n=112  67.0% ±8.7
+#     PAXGUSDT 15m  2025-26 (liquid)  n=482  56.6% ±4.4
+#     PAXGUSDT 1h   2025-26 (liquid)  n=237  57.8% ±6.3
+# Break-even at this bracket on XAUUSDT is 62-64%. The margin is real but thin.
+# Full evidence, ablation and the failed ideas: docs/ENTRY_RULES.md.
+
+name: mtf_confluence_pullback
+symbol: XAUUSDT
+timeframe: 15m
+
+period:
+  start: 2026-03-09T00:00:00Z
+  end:   now
+
+session_filter:
+  mode: gold_session          # Sun 21:00 UTC -> Fri 22:00 UTC
+
+# ---------------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------------
+# Legs are ordered SLOWEST TIMEFRAME FIRST on purpose. watch.bat prints them in
+# order, so the blocking-leg panel reads as a countdown: the top rows change
+# rarely, and when all six are true the setup is arming.
+entry:
+  side: both                  # ⛔ needs ENTRY_RULES §8.3
+
+  long:
+    all_of:
+      - signal: tf_4h_ut_bullish          # 1. the trend
+      - signal: tf_1h_ut_bullish          # 2.
+      - signal: tf_30m_ut_bullish         # 3.
+      - signal: ut_bias_bullish           # 4. own 15m
+      - signal: tf_5m_ut_bullish          # 5. optional — see below
+      - signal: tf_4h_ema_stack_bullish   # 6. the structure
+      - signal: pullback_reclaim_long     # 7-9. dip to EMA-14, then reclaim it
+        params: { ema: ema_14, lookback: 3, require_higher_close: true }
+
+  short:
+    all_of:
+      - signal: tf_4h_ut_bearish
+      - signal: tf_1h_ut_bearish
+      - signal: tf_30m_ut_bearish
+      - signal: ut_bias_bearish
+      - signal: tf_5m_ut_bearish
+      - signal: tf_4h_ema_stack_bearish
+      - signal: pullback_reclaim_short
+        params: { ema: ema_14, lookback: 3, require_higher_close: true }
+
+  # The 5m leg is worth +7.8 points of win rate on XAUUSDT and ±1 point on both
+  # PAXG panels — i.e. it is not reliably load-bearing. Keep it on, but it is the
+  # first leg to drop if more trades are wanted (~+12% signals).
+  #
+  # The pullback legs are the least-supported part: +9.1 on XAUUSDT, +1.2 on
+  # PAXG 15m, 0.0 on PAXG 1h. They cost nothing anywhere, they halve the trade
+  # count and they improve the fill price. Do not defend them if a test kills them.
+  #
+  # ⚠️ The pattern ALONE is worth nothing: 49.8% on n=2107, the coin flip exactly.
+  # Any variant that keeps the pullback and relaxes the alignment is going the
+  # wrong way. See docs/ENTRY_RULES.md §4.3.
+
+  cooldown_bars: 8            # 15m bars; the trail can hold a position for hours
+
+# ---------------------------------------------------------------------------
+# Exit — Option B of ENTRY_RULES §5
+# ---------------------------------------------------------------------------
+# Beat the plain symmetric bracket on profit factor on ALL THREE panels
+# (1.56->1.78, 0.82->1.06, 1.02->1.29) while holding the win rate in the 55-67%
+# band. TP1 is the high-probability half; the runner is uncapped and reached
+# 10.9 R on one PAXG trade.
+exit:
+  stop_loss: { mode: atr_mult, value: 2.5 }     # frozen at the entry bar
+  take_profit: null                              # no ceiling on the runner
+
+  partial:                                       # ⛔ needs ENTRY_RULES §8.4
+    at:        { mode: atr_mult, value: 2.5 }
+    fraction:  0.5
+    then_stop: breakeven
+
+  trailing:                                      # ⛔ needs ENTRY_RULES §8.4
+    mode: chandelier          # peak - k*ATR14, NOT the ltf_ema_break already built
+    value: 2.5
+    arm_after: partial        # dormant until TP1 fills — an unarmed trail on a
+                              # pullback entry fires at the entry bar. That trap
+                              # has already been paid for once (ANALYSIS_BRIEF §7.2).
+
+  time_stop_bars: null
+
+# Variant worth running second: stop_loss 3.0, partial at 2.0, trail 2.5.
+# Win rate 73.5% on XAUUSDT and 63.7% on PAXG 1h, at a slightly lower profit
+# factor. Pick it if the headline number matters more than the last 10% of edge.
+
+sizing:
+  mode: fixed_qty
+  qty: 1.0
+
+costs:
+  taker_fee_bps: 5.5
+  # ⚠️ The single biggest lever in the whole strategy: a take-profit IS a resting
+  # limit order, so the exit should never pay taker. 11 bps -> 7.5 bps round trip
+  # moves the break-even win rate on XAUUSDT 15m from 64.4% to 59.8% — roughly
+  # doubling the margin over break-even, for free. Needs maker_fee_bps in the
+  # schema (ENTRY_RULES §8.6) before it can be measured rather than argued.
+  slippage_ticks: 1
+  apply_funding: true
+
+execution:
+  entry_fill: next_bar_open
+  intrabar_resolution: 1m
+  ambiguous_policy: stop_first
+
+features:
+  timeframes: [5m, 15m, 30m, 1h, 4h]
+  include:
+    - atr_14
+    - atr_percent
+    - ema_7
+    - ema_14
+    - ema_28
+    - ema_alignment
+    - ema_separation_atr
+    - extension_atr
+    - rsi_14
+    - adx_14
+    - plus_di
+    - minus_di
+    - bb_percent_b
+    - bb_width_percentile
+    - relative_volume
+    - ut_level
+    - ut_bias
+    - ut_position
+    - structure_state
+    - volatility_band
+    - volatility_percentile
+    - directional_score
+    - confirmed_bias
+  derived:
+    - dist_to_ut_pct
+    - dist_to_ema_fast_pct
+    - dist_to_ema_slow_pct
+    - atr_percentile_250
+    - hour_of_day_myt
+    - day_of_week_myt
+    - session
+    - bars_since_last_signal
+    - funding_rate

@@ -1,0 +1,41 @@
+{
+ "symbol": "XAUUSDT",
+ "broker_symbol": "GOLD",
+ "anchor": "15m",
+ "side": "long",
+ "conditions": [
+  {
+   "feature": "dist_hh96_atr",
+   "op": "<",
+   "value": -4.631483789434826
+  },
+  {
+   "feature": "5m_relative_volume",
+   "op": ">",
+   "value": 0.8884515439630151
+  }
+ ],
+ "lots": 0.01,
+ "fitted": {
+  "at_utc": "2026-09-21T14:01:05+00:00",
+  "days": [
+   "2026-09-15",
+   "2026-09-16",
+   "2026-09-17",
+   "2026-09-18",
+   "2026-09-21"
+  ],
+  "n_days": 5,
+  "trades": 18,
+  "per_day": 3.6,
+  "wins": 17,
+  "losses": 1,
+  "timeouts": 0,
+  "win_rate": 0.9444,
+  "net": 223.4,
+  "p_value": 0.003188,
+  "conditions_tested": 7108,
+  "breakeven": 0.63488,
+  "bracket": "TP +15 / SL -25"
+ }
+}

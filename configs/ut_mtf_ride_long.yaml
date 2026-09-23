@@ -1,0 +1,115 @@
+# ut_mtf_ride_long — 1H direction, 15m entry, 5m exit
+#
+#   DIRECTION  1H says buy: price is above the 1H UT Dynamic Level.
+#   ENTRY      15m pulls back onto its OWN UT line (the yellow step) and is still
+#              above it — the line is a floor, not a ceiling.
+#   EXIT       fixed $25 stop; NO take-profit. The position is ridden until a 5m
+#              bar CLOSES below EMA14. A one-way move is captured whole.
+#
+# Why the entry timeframe is 15m and not 1H: the trigger is a 15m event, so the
+# engine must step bar-by-bar on 15m. The 1H read is supplied as an as-of-CLOSED
+# higher-timeframe value, which is what stops the 15m bar from seeing an hour
+# that has not finished yet.
+
+name: ut_mtf_ride_long
+symbol: XAUUSDT
+timeframe: 15m
+
+period:
+  start: 2026-03-09T00:00:00Z
+  end:   now
+
+session_filter:
+  mode: gold_session          # Sun 21:00 UTC -> Fri 22:00 UTC
+
+entry:
+  side: long
+  all_of:
+    - signal: htf_1h_ut_bullish     # 1H close above the 1H UT level
+    - signal: ut_bias_bullish       # 15m close still ABOVE its own UT line
+    - signal: ut_level_near         # ...and within ut_near_atr of it = the pullback
+
+  # 0.6 = the app's own UT_NEAR_ATR (AlertEngine.kt:47).
+  # Measured candidate 15m bars, in-session, with the 1H gate:
+  #     0.3 ATR -> 148     0.5 -> 277     0.6 -> 355     0.8 -> 532
+  ut_near_atr: 0.6
+
+  # 15m bars. Price can sit on the line for hours; without this one pullback
+  # becomes a dozen entries.
+  cooldown_bars: 8
+
+exit:
+  # $25 at qty 1. Deliberately the only hard level in the strategy.
+  stop_loss: { mode: usd_pnl, value: 25 }
+
+  # No ceiling. This is the whole point of the setup.
+  take_profit: null
+
+  trailing:
+    mode: ltf_ema_break
+    timeframe: 5m
+    ema: ema_14
+    closes: 1        # raise to 2 to demand confirmation and sit through wicks
+
+  # Left off so a trend can run. `end_of_data` on the final open trade is
+  # reported separately in the summary so it cannot be mistaken for a real exit.
+  time_stop_bars: null
+
+sizing:
+  mode: fixed_qty
+  qty: 1.0
+
+costs:
+  taker_fee_bps: 5.5
+  slippage_ticks: 1
+  apply_funding: true
+
+execution:
+  entry_fill: next_bar_open
+  intrabar_resolution: 1m
+  # Within one 15m bar the 5m sub-bars are walked in order, and the STOP is
+  # checked against each sub-bar's high/low BEFORE its close is compared to the
+  # EMA. A stop is an intrabar event; an EMA break is only knowable at the close.
+  ambiguous_policy: stop_first
+
+features:
+  timeframes: [5m, 15m, 30m, 1h, 4h]
+  include:
+    - atr_14
+    - atr_percent
+    - ema_7
+    - ema_14
+    - ema_28
+    - ema_alignment
+    - ema_separation_atr
+    - extension_atr
+    - rsi_14
+    - adx_14
+    - plus_di
+    - minus_di
+    - bb_percent_b
+    - bb_width
+    - bb_width_percentile
+    - vwap
+    - relative_volume
+    - ut_level
+    - ut_bias
+    - ut_position
+    - structure_state
+    - bos
+    - choch
+    - volatility_band
+    - volatility_percentile
+    - volatility_measured
+    - directional_score
+    - confirmed_bias
+  derived:
+    - dist_to_ut_pct
+    - dist_to_ema_fast_pct
+    - dist_to_ema_slow_pct
+    - atr_percentile_250
+    - hour_of_day_myt
+    - day_of_week_myt
+    - session
+    - bars_since_last_signal
+    - funding_rate
