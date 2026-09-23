@@ -737,15 +737,42 @@ def _signal3_trades(db: Database, symbol: str, cfg: IndicatorConfig,
                 side = str(ev.get("side") or "")
                 if entry_ms <= 0:
                     continue
+                sl = round(float(ev.get("sl") or 0), 4)
+                tp = round(float(ev.get("tp") or 0), 4)
+                entry_px = round(float(ev.get("entry_ref") or 0), 4)
+                # A live row used to sit at "open" forever even after the
+                # market traded through its SL or TP. Resolve it against
+                # the same 1m path the walker uses: first touch wins,
+                # ties are losses, and only genuinely-still-open trades
+                # stay open. The walk starts at the signal bar's CLOSE —
+                # that is when the live entry (spot) actually happened;
+                # counting the signal bar's own wick would resolve trades
+                # the entry never saw.
+                reason_, px, xt, _amb = walk_forward(
+                    pt, ph, pl, pc, entry_ms + 900_000, entry_px, tp, sl,
+                    side == "long", 24 * 3600_000)
+                still_open = reason_ in ("nodata", "timeout") \
+                    and int(pt[-1]) < entry_ms + 24 * 3600_000
+                if reason_ in ("tp", "sl"):
+                    pnl = ((float(px) - entry_px) if side == "long"
+                           else (entry_px - float(px)))
+                    net = round(pnl, 2)
+                    exit_t, exit_px, reason_r = int(xt), round(
+                        float(px), 4), reason_
+                    resolved = True
+                else:
+                    net, exit_t, exit_px = 0.0, None, None
+                    reason_r = reason_ if not still_open else "open"
+                    resolved = not still_open
                 live_by_key[(entry_ms, side)] = {
                     "signal_bar": entry_ms,
                     "entry_time": entry_ms,
-                    "entry_price": round(float(ev.get("entry_ref") or 0), 4),
-                    "exit_time": None, "exit_price": None,
-                    "reason": "open",
-                    "resolved": False, "net": 0.0,
-                    "sl": round(float(ev.get("sl") or 0), 4),
-                    "tp": round(float(ev.get("tp") or 0), 4),
+                    "entry_price": entry_px,
+                    "exit_time": exit_t, "exit_price": exit_px,
+                    "reason": reason_r,
+                    "resolved": resolved, "net": net,
+                    "sl": sl,
+                    "tp": tp,
                     "side": side,
                     "event_type": ev.get("event_type"),
                     "live": True,
