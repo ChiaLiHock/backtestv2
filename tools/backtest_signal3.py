@@ -13,11 +13,12 @@ import numpy as np
 sys.path.insert(0, r"C:\Users\User\Downloads\backtest")
 
 from backtest.data.db import Database, CandleRepository
-from backtest.engine.signal3 import (detect_swings,
-                                     run_state_machine, sweep_bracket,
-                                     nearest_opposing_swing, MIN_RR,
+from backtest.engine.signal3 import (detect_swings, SweepState, MIN_RR,
+                                     QUIET_VOL_RATIO_MAX, VOL_MEDIAN_BARS,
                                      SWING_TAIL_BARS, SWING_LOOKBACK,
-                                     MIN_ZONE_WIDTH_USD)
+                                     SL_ZONE_MULT,
+                                     MIN_ZONE_WIDTH_USD,
+                                     MIN_ZONE_WIDTH_OF_MEDIAN)
 from backtest.tools.validate_rule import walk_forward
 
 MYT = timezone(timedelta(hours=8))
@@ -35,19 +36,18 @@ def fold(df, step):
 
 
 def run_sweep_trades(h15, pt, ph, pl, pc):
-    """Walk all swings, run the ENGINE's state machine, resolve outcomes.
+    """SNAPSHOT ONLY — the 60.7% / n=468 vintage (2026-09-23, rr-floor era).
 
-    Alignment notes (2026-09-23) — the walker used to be a hand-copied
-    variant of the live machine and the two had drifted apart:
-    * it now calls `run_state_machine` / `sweep_bracket` /
-      `nearest_opposing_swing` from engine/signal3, so the walk IS the
-      live logic, one fire per swing (the old re-fire loop produced the
-      break_count=3/4 buckets live never emits);
-    * the quiet-volume reference is a ROLLING per-bar median (what the
-      old walker did) instead of one median taken at the last bar;
-    * TP is the nearest opposing swing CONFIRMED by the entry bar — a
-      swing that only forms after the entry was lookahead, and the old
-      first-match loop took the OLDEST swing, not the nearest.
+    Known biases, kept deliberately for version control:
+    * entry at the RETURN BAR'S OWN OPEN (takes the reclaim amplitude
+      for free — same lookahead as the 77.5% snapshot);
+    * one machine walk per swing that keeps firing on later returns
+      (break_count 3/4 buckets are re-fires of the same swing);
+    * TP = the FIRST opposing swing above entry in index order — the
+      oldest, not the nearest, and swings that only formed AFTER the
+      entry count too (future TP);
+    * cost is a single taker side (0.85bp).
+    Reproduces XAU 60.7% / PF 1.79 / net +3329 over n=468. NOT for live.
     """
     t15 = h15["open_time"].to_numpy(dtype="int64")
     h = h15["high"].to_numpy(dtype="float64")
@@ -65,72 +65,98 @@ def run_sweep_trades(h15, pt, ph, pl, pc):
                 continue
             swing_price = float(l[abs_i] if side == "low" else h[abs_i])
 
+            state = SweepState(swing_price=swing_price, side=side)
             start = abs_i + SWING_LOOKBACK
-            end = min(start + SWING_TAIL_BARS, n)
-            # One machine pass over the swing's tail, rolling quiet
-            # reference per bar — the same call the live loop makes.
-            r = run_state_machine(
-                swing_price=swing_price, side=side,
-                h=h, l=l, c=c, v=v, start=start, end=end)
-            if r is None:
-                continue
-            state, j, reason = r
-            if not state.ready or reason is not None:
-                # not ready, or ready but stopped by a zone-width floor —
-                # the machine names the gate, live shows it on the panel
-                continue
+            for j in range(start, min(start + SWING_TAIL_BARS, n)):
+                close = float(c[j])
+                breaking = close < swing_price if side == "low" \
+                    else close > swing_price
+                returning = close >= swing_price if side == "low" \
+                    else close <= swing_price
 
-            zone_w = state.zone_width
-            # SNAPSHOT ONLY — KNOWN LOOKAHEAD: entry at the return bar's
-            # own open takes the whole reclaim amplitude for free. This is
-            # the version that printed 77.5% win / PF 4.6 on XAU. Kept as a
-            # tagged snapshot for version control, NOT for live use.
-            entry_t = int(t15[j])
-            k = int(np.searchsorted(pt, entry_t))
-            if k >= len(pt):
-                continue
-            entry = float(_po[k])
-            is_long = side == "low"
+                if breaking and state.returned:
+                    vol = float(v[j])
+                    vol_med = float(np.median(
+                        v[max(0, j - VOL_MEDIAN_BARS):j])) \
+                        if j > VOL_MEDIAN_BARS else 0
+                    quiet = vol < vol_med * QUIET_VOL_RATIO_MAX \
+                        if vol_med > 0 else False
+                    if quiet:
+                        state.break_count += 1
+                        state.returned = False
+                        if side == "low":
+                            state.extreme = min(state.extreme or swing_price,
+                                                float(l[j]))
+                        else:
+                            state.extreme = max(state.extreme or swing_price,
+                                                float(h[j]))
+                elif returning and not state.returned:
+                    state.returned = True
+                    if state.ready:
+                        zone_w = state.zone_width
+                        # Zone-width floors: HARD $8 + relative 50% median
+                        if zone_w < MIN_ZONE_WIDTH_USD:
+                            break
+                        local_scale = abs(
+                            swing_price - float(np.median(
+                                l[j - VOL_MEDIAN_BARS:j]
+                                if side == "low"
+                                else h[j - VOL_MEDIAN_BARS:j]))) \
+                            if j >= VOL_MEDIAN_BARS else 0.0
+                        if local_scale > 0 and zone_w \
+                                < MIN_ZONE_WIDTH_OF_MEDIAN * local_scale:
+                            break  # skip this swing entirely
+                        entry_t = int(t15[j])
+                        k = int(np.searchsorted(pt, entry_t))
+                        if k >= len(pt):
+                            continue
+                        entry = float(_po[k])
+                        is_long = side == "low"
+                        sl = (state.extreme - SL_ZONE_MULT * zone_w) \
+                            if is_long \
+                            else (state.extreme + SL_ZONE_MULT * zone_w)
+                        # TP: first opposing swing beyond entry (the OLD
+                        # rule — oldest first, future swings included)
+                        tp = (swing_price + 3 * zone_w) if is_long \
+                            else (swing_price - 3 * zone_w)
+                        opp = sh_idx if is_long else sl_idx
+                        for si in opp:
+                            if is_long and si > abs_i \
+                                    and float(h[si]) > entry:
+                                tp = float(h[si])
+                                break
+                            elif not is_long and si > abs_i \
+                                    and float(l[si]) < entry:
+                                tp = float(l[si])
+                                break
 
-            sl, tp = sweep_bracket(state, entry)
-            # TP: nearest CONFIRMED opposing swing — confirmed means the
-            # fractal had SWING_LOOKBACK bars after it, all at or before
-            # the entry bar. Anything later is lookahead.
-            opp = sh_idx if is_long else sl_idx
-            confirmed = np.array(
-                [si for si in opp
-                 if abs_i < si <= j - SWING_LOOKBACK], dtype="int64")
-            near = nearest_opposing_swing(entry, is_long, confirmed, h, l)
-            if near is not None:
-                tp = near
+                        # rr floor (the one live rule this vintage shipped)
+                        if abs(tp - entry) < MIN_RR * abs(entry - sl):
+                            continue
 
-            # rr floor, same as the live evaluator: TP must be at least
-            # MIN_RR × the stop distance.
-            if abs(tp - entry) < MIN_RR * abs(entry - sl):
-                continue
-
-            reason_, px, xt, _amb = walk_forward(
-                pt, ph, pl, pc, entry_t, entry, tp, sl, is_long, HORIZON)
-            if reason_ == "nodata":
-                continue
-            resolved = reason_ in ("tp", "sl") or \
-                int(pt[-1]) >= entry_t + HORIZON
-            net = ((float(px) - entry) if is_long
-                   else (entry - float(px))) \
-                - entry * COST if resolved else 0.0
-            trades.append({
-                "entry_time": entry_t,
-                "day_myt": datetime.fromtimestamp(
-                    entry_t / 1000, MYT).strftime("%Y-%m-%d"),
-                "event_type": f"double_sweep_{side}",
-                "side": "long" if is_long else "short",
-                "swing_level": swing_price,
-                "zone_width": zone_w,
-                "break_count": state.break_count,
-                "entry_price": entry, "sl": sl, "tp": tp,
-                "reason": reason_ if resolved else "open",
-                "resolved": resolved, "net": round(net, 2),
-            })
+                        reason_, px, xt, _amb = walk_forward(
+                            pt, ph, pl, pc, entry_t, entry, tp, sl,
+                            is_long, HORIZON)
+                        if reason_ == "nodata":
+                            continue
+                        resolved = reason_ in ("tp", "sl") or \
+                            int(pt[-1]) >= entry_t + HORIZON
+                        net = ((float(px) - entry) if is_long
+                               else (entry - float(px))) \
+                            - entry * COST if resolved else 0.0
+                        trades.append({
+                            "entry_time": entry_t,
+                            "day_myt": datetime.fromtimestamp(
+                                entry_t / 1000, MYT).strftime("%Y-%m-%d"),
+                            "event_type": f"double_sweep_{side}",
+                            "side": "long" if is_long else "short",
+                            "swing_level": swing_price,
+                            "zone_width": zone_w,
+                            "break_count": state.break_count,
+                            "entry_price": entry, "sl": sl, "tp": tp,
+                            "reason": reason_ if resolved else "open",
+                            "resolved": resolved, "net": round(net, 2),
+                        })
     trades.sort(key=lambda t: t["entry_time"])
     return trades
 
