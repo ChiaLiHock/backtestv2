@@ -721,6 +721,7 @@ def _signal3_trades(db: Database, symbol: str, cfg: IndicatorConfig,
         # LIVE version replaces the walker's because its entry price is
         # what the signal actually meant at the moment it fired.
         if live_events:
+            from ..tools.validate_rule import walk_forward
             live_by_key: dict[tuple[int, str], dict[str, Any]] = {}
             for ev in live_events:
                 # Two shapes arrive here: in-memory events carry an
