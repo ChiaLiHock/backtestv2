@@ -1097,7 +1097,30 @@ class Watcher:
         signals = read_log(self.engine.signal.log_path)
         per_symbol: dict[str, dict] = {}
         active = self.symbols[0]
-        signal3_live = self.signal3.events() if self.signal3 else None
+        # In-memory events die with the process; the jsonl log is the
+        # durable record. Both, so a restart does not blank the panel's
+        # signal3 rows for trades the phone was already notified about.
+        # The log rows are evaluation outputs (no event id) — keyed on
+        # (bar_open_ms, side), which is exactly the merge key the panel
+        # uses, with the in-memory events (which DO carry ids) winning.
+        signal3_live = None
+        if self.signal3 is not None:
+            from .engine.signal3 import _read_log as _s3_read_log
+            by_key: dict[tuple, dict] = {}
+            for ev in _s3_read_log(self.signal3.log_path):
+                if not ev.get("fired"):
+                    continue
+                key = (int(ev.get("bar_open_ms") or 0),
+                       str(ev.get("side") or ""))
+                if key[0] <= 0:
+                    continue
+                by_key[key] = ev
+            for ev in self.signal3.events():
+                key = (int(ev.get("bar_open_ms") or 0),
+                       str(ev.get("side") or ""))
+                if key[0] > 0:
+                    by_key[key] = ev        # in-memory wins on collision
+            signal3_live = list(by_key.values())
 
         for sym in self.symbols:
             cfg = self.configs[sym]

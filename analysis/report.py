@@ -723,8 +723,15 @@ def _signal3_trades(db: Database, symbol: str, cfg: IndicatorConfig,
         if live_events:
             live_by_key: dict[tuple[int, str], dict[str, Any]] = {}
             for ev in live_events:
-                if not ev.get("id") or not str(ev.get("id", "")).startswith(
-                        f"s3:{symbol}"):
+                # Two shapes arrive here: in-memory events carry an
+                # "s3:<symbol>@..." id; jsonl log rows (evaluation
+                # outputs, replayed after a restart) carry no id but DO
+                # carry symbol. Either is acceptable — the (bar_open_ms,
+                # side) key below is the real identity.
+                ev_id = str(ev.get("id") or "")
+                ev_sym = str(ev.get("symbol") or "")
+                if ev_id and not ev_id.startswith(f"s3:{symbol}") \
+                        and ev_sym and ev_sym != symbol:
                     continue
                 entry_ms = int(ev.get("bar_open_ms") or 0)
                 side = str(ev.get("side") or "")
@@ -743,12 +750,24 @@ def _signal3_trades(db: Database, symbol: str, cfg: IndicatorConfig,
                     "event_type": ev.get("event_type"),
                     "live": True,
                 }
-            # replace walker rows that collide with a live row
+            # replace walker rows that collide with a live row. The key is
+            # tried on BOTH timestamps: the walker's entry is the first 1m
+            # open after the signal bar closes, the live event stamps the
+            # signal bar itself — same trade, two clocks, and a single-key
+            # match let today's 11:11 fire vanish when the walker moved.
+            live_by_signal_bar: dict[tuple[int, str], dict[str, Any]] = {
+                (int(r["signal_bar"]), r["side"]): r
+                for r in live_by_key.values()}
             merged: list[dict[str, Any]] = []
             for r in out:
                 key = (r["entry_time"], r.get("side"))
+                skey = (r.get("signal_bar") or 0, r.get("side"))
                 if key in live_by_key:
                     merged.append(live_by_key.pop(key))
+                elif skey in live_by_signal_bar:
+                    hit = live_by_signal_bar.pop(skey)
+                    live_by_key.pop((hit["entry_time"], hit["side"]), None)
+                    merged.append(hit)
                 else:
                     merged.append(r)
             # append any live-only rows (walker hasn't caught up)
