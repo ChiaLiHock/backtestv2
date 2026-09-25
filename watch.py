@@ -1526,18 +1526,37 @@ class Watcher:
                 event_type = "reclaim_high"
             elif state == "reclaimed_low":
                 event_type = "reclaim_low"
-            
+
+            # The announcement must carry the EVENT's own facts, not the
+            # map's session aggregates: the price where it happened, the
+            # Asia boundary it happened to, and the volume verdict. The
+            # map's own events list has the real record — take the newest
+            # one of this type; fall back to the aggregates only if the
+            # map has no event yet (a state set by a quiet return).
+            lv = block.get("levels") or {}
+            ev_price = (lv.get("session_high") or lv.get("session_low")
+                        or 0.0)
+            ev_level = lv.get("session_high") or 0.0
+            if "low" in event_type:
+                ev_level = lv.get("asia_low") or ev_level
+            else:
+                ev_level = lv.get("asia_high") or ev_level
+            vol_ok = None
+            for me in reversed(block.get("events") or []):
+                if me.get("type") == event_type:
+                    ev_price = float(me.get("price") or ev_price)
+                    vol_ok = me.get("vol_ok")
+                    break
+
             self._session_events.append({
                 "id": f"ses:{sym}@{now_ms}",
                 "type": event_type,
                 "kind": "session_event",
                 "symbol": sym,
-                "price": block["levels"].get("session_high")
-                           or block["levels"].get("session_low")
-                           or 0.0,
-                "level": block["levels"].get("session_high", 0.0),
+                "price": ev_price,
+                "level": ev_level,
                 "bar_myt": sm._fmt_myt(now_ms),
-                "vol_ok": None,
+                "vol_ok": vol_ok,
             })
 
         # Day verdict event
