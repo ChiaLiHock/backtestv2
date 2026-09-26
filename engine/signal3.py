@@ -107,6 +107,24 @@ SL_ZONE_MULT = 1.0         # SL beyond the extreme by 1Ã— zone width
 # ~68% of trades and lifts PF on every symbol (XAU 1.49â†’1.79, MT5
 # 1.59â†’1.74, PAXG 1.70â†’1.94).
 MIN_RR = 0.5
+# rr ceiling (owner's rule 2026-09-26): the TP override can latch onto a
+# distant opposing swing (measured live: TP $200 on a $32 stop, rr 6.3) —
+# a target price will not reach inside a day for structural reasons that
+# have nothing to do with the pattern. Cap the payout at MAX_RR x the
+# stop distance; anything beyond is truncated to the cap, never skipped
+# (the swing is still valid structure, it is just too far to be the goal).
+MAX_RR = 3.0
+# TP confined to today's Asia range (owner's rule 2026-09-26): the Asia
+# session (07:00-15:00 MYT) is the day's anchor — a TP placed beyond its
+# high/low is betting on a breakout that usually does not come inside a
+# day. Measured on all three feeds (TP beyond Asia H/L): XAU 33.3% win /
+# net -9 vs 90.6% / +1498 inside; MT5 9.5% / -450 vs 83.5% / +1218;
+# PAXG 51.4% / +7 vs 79.9% / +3051. Generalising to "previous session's
+# H/L" (US->Asia, Europe->US) was tested and is NOT the same rule — only
+# the Asia anchor is consistent across feeds. The TP is clamped to sit
+# INSIDE the range (never beyond it); if the clamp kills the rr floor the
+# trade is skipped, not taken at a payout the day's structure forbids.
+TP_CLAMP_TO_ASIA = True
 
 # --- adaptive timeframe (owner's rule 2026-09-21, revised) ----------------
 # Start at 5m. If the current bar's high-low range is under $8, escalate
@@ -120,6 +138,26 @@ CONSEC_BARS_TO_DOWNGRADE = 2
 # --- 15m fold ------------------------------------------------------------
 FIFTEEN_MS = 900_000
 MINUTE_MS = 60_000
+
+
+def asia_range_at(t1: np.ndarray, h1: np.ndarray, l1: np.ndarray,
+                  day0_ms: int) -> tuple[float, float] | None:
+    """Today's Asia session (07:00-15:00 MYT) high/low as of the 1m tail.
+
+    One definition shared by the live evaluator and the backtest walker:
+    `day0_ms` is the MYT day anchor (the session map's `_day0_ms` live, the
+    entry bar's day in the walk). Returns None when the session has not
+    produced bars yet — the caller then leaves the TP unclamped rather
+    than guessing a range.
+    """
+    offset = 8 * 3_600_000
+    days = (t1 + offset) // 86_400_000
+    hours = ((t1 // 3_600_000 + 8) % 24)
+    m = (days == ((day0_ms + offset) // 86_400_000)) \
+        & (hours >= 7) & (hours < 15)
+    if not m.any():
+        return None
+    return float(h1[m].max()), float(l1[m].min())
 
 
 def _closed_fresh(minute: pd.DataFrame | None, now_ms: int) -> pd.DataFrame:
@@ -395,6 +433,14 @@ class Signal3:
         self._f15 = f_tf  # named _f15 for compat; actual tf may be 25/30/35m
         self._ctx_built_at = now
         self._ctx_last_ms = int(tail["open_time"].iloc[-1])
+        # Today's Asia H/L off the same tail the sweep reads — the TP
+        # clamp needs the day's anchor and it must come from the same
+        # data the rest of the frame uses, not a second pull.
+        self._asia_hl = asia_range_at(
+            tail["open_time"].to_numpy(dtype="int64"),
+            tail["high"].to_numpy(dtype="float64"),
+            tail["low"].to_numpy(dtype="float64"),
+            self._ctx_last_ms)
         return (self._ctx,
                 f_tf["open_time"].to_numpy(dtype="int64"),
                 f_tf["high"].to_numpy(dtype="float64"),
@@ -696,7 +742,51 @@ class Signal3:
         if near is not None:
             tp = near
 
+        # rr ceiling: a TP beyond MAX_RR x the stop distance is a swing
+        # too far to be a sensible goal — truncated to the cap, not
+        # skipped (the pattern is valid; the target is just nearer).
+        sl_d0 = abs(entry - sl)
+        if abs(tp - entry) > MAX_RR * sl_d0:
+            tp = entry + MAX_RR * sl_d0 if is_long else entry - MAX_RR * sl_d0
+
+        # Asia-range clamp: the day's anchor. A TP beyond today's Asia
+        # high/low is a breakout bet the session rarely pays (see
+        # TP_CLAMP_TO_ASIA note) — pulled INSIDE the range instead. If
+        # the entry itself is already beyond the range (a real breakout
+        # in progress), the clamp is skipped: that trade is judged by
+        # the rr rules alone.
+        asia = getattr(self, "_asia_hl", None) if TP_CLAMP_TO_ASIA else None
+        asia_filtered = None
+        if asia is not None:
+            a_hi, a_lo = asia
+            if a_lo < entry < a_hi:
+                if is_long and tp > a_hi:
+                    tp = a_hi
+                elif not is_long and tp < a_lo:
+                    tp = a_lo
+            elif is_long and tp > a_hi:
+                asia_filtered = (
+                    f"TP ${tp:.1f} beyond Asia high {a_hi:.1f} with entry "
+                    f"outside the range — breakout regime, skipped")
+            elif not is_long and tp < a_lo:
+                asia_filtered = (
+                    f"TP ${tp:.1f} beyond Asia low {a_lo:.1f} with entry "
+                    f"outside the range — breakout regime, skipped")
+
         kind = "double_sweep_low" if is_long else "fake_break_high"
+        if asia_filtered is not None:
+            return {
+                "fired": False,
+                "side": "long" if is_long else "short",
+                "event_type": kind,
+                "swing_level": round(state.swing_price, 2),
+                "sweep_extreme": round(state.extreme, 2),
+                "zone_width": round(zone_w, 2),
+                "break_count": state.break_count,
+                "entry_ref": round(entry, 2),
+                "sl": round(sl, 2), "tp": round(tp, 2),
+                "filtered_by": asia_filtered,
+            }
         # rr floor: TP must be at least MIN_RR Ã— the stop distance. The
         # trade is skipped with the reason stated, never taken at a
         # worse-than-MIN_RR payout.

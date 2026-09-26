@@ -722,6 +722,7 @@ def _signal3_trades(db: Database, symbol: str, cfg: IndicatorConfig,
         # what the signal actually meant at the moment it fired.
         if live_events:
             from ..tools.validate_rule import walk_forward
+            from ..engine.signal3 import MAX_RR
             live_by_key: dict[tuple[int, str], dict[str, Any]] = {}
             for ev in live_events:
                 # Two shapes arrive here: in-memory events carry an
@@ -738,15 +739,53 @@ def _signal3_trades(db: Database, symbol: str, cfg: IndicatorConfig,
                 side = str(ev.get("side") or "")
                 if entry_ms <= 0:
                     continue
+                entry_px = float(ev.get("entry_ref") or 0)
+                ev_sl = float(ev.get("sl") or 0)
+                ev_tp = float(ev.get("tp") or 0)
+                # Resolve the live row against real 1m price, exactly as
+                # the walker resolves its own: a live-fired (or replayed)
+                # event that has since reached its TP/SL or 24h limit
+                # must NOT sit "open" forever overwriting the walker's
+                # settled row. Still-running trades stay open.
+                reason_l = "open"
+                exit_px = exit_ms = None
+                resolved_l = False
+                net_l = 0.0
+                if entry_px > 0 and ev_sl > 0 and ev_tp > 0:
+                    is_long = side == "long"
+                    # A pre-cap event can carry a TP beyond MAX_RR; the
+                    # cap is applied at emission now, but replayed rows
+                    # predate it — truncate the same way before judging.
+                    if abs(ev_tp - entry_px) > MAX_RR * abs(entry_px - ev_sl):
+                        ev_tp = entry_px + (MAX_RR * abs(entry_px - ev_sl)) \
+                            * (1 if is_long else -1)
+                    reason_l, px_l, xt_l, _amb = walk_forward(
+                        pt, ph, pl, pc, entry_ms, entry_px, ev_tp, ev_sl,
+                        is_long, _bt.HORIZON)
+                    if reason_l == "nodata":
+                        reason_l = "open"
+                    else:
+                        done_l = (reason_l in ("tp", "sl")
+                                  or int(pt[-1]) >= entry_ms + _bt.HORIZON)
+                        if done_l:
+                            reason_l = reason_l if reason_l in ("tp", "sl") \
+                                else "timeout"
+                            exit_px = round(float(px_l), 4)
+                            exit_ms = int(xt_l)
+                            resolved_l = True
+                            gross = ((float(px_l) - entry_px) if is_long
+                                     else (entry_px - float(px_l)))
+                            net_l = round(gross - entry_px * 0.85 / 1e4, 2)
                 live_by_key[(entry_ms, side)] = {
                     "signal_bar": entry_ms,
                     "entry_time": entry_ms,
-                    "entry_price": round(float(ev.get("entry_ref") or 0), 4),
-                    "exit_time": None, "exit_price": None,
-                    "reason": "open",
-                    "resolved": False, "net": 0.0,
-                    "sl": round(float(ev.get("sl") or 0), 4),
-                    "tp": round(float(ev.get("tp") or 0), 4),
+                    "entry_price": round(entry_px, 4),
+                    "exit_time": exit_ms,
+                    "exit_price": exit_px,
+                    "reason": reason_l,
+                    "resolved": resolved_l, "net": net_l,
+                    "sl": round(ev_sl, 4),
+                    "tp": round(ev_tp, 4),
                     "side": side,
                     "event_type": ev.get("event_type"),
                     "live": True,

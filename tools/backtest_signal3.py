@@ -15,7 +15,8 @@ sys.path.insert(0, r"C:\Users\User\Downloads\backtest")
 from backtest.data.db import Database, CandleRepository
 from backtest.engine.signal3 import (detect_swings,
                                      run_state_machine, sweep_bracket,
-                                     nearest_opposing_swing, MIN_RR,
+                                     nearest_opposing_swing, MIN_RR, MAX_RR,
+                                     TP_CLAMP_TO_ASIA, asia_range_at,
                                      SWING_TAIL_BARS, SWING_LOOKBACK,
                                      MIN_ZONE_WIDTH_USD)
 from backtest.tools.validate_rule import walk_forward
@@ -104,6 +105,30 @@ def run_sweep_trades(h15, pt, ph, pl, pc):
             if near is not None:
                 tp = near
 
+            # rr ceiling — same cap as the live evaluator: a TP beyond
+            # MAX_RR x the stop distance is truncated to the cap.
+            sl_d = abs(entry - sl)
+            if abs(tp - entry) > MAX_RR * sl_d:
+                tp = entry + MAX_RR * sl_d if is_long \
+                    else entry - MAX_RR * sl_d
+
+            # Asia-range clamp — the same rule the live evaluator runs:
+            # TP pulled inside today's Asia H/L when the entry is inside
+            # the range; entry beyond the range (breakout) with a TP
+            # still beyond it is skipped.
+            if TP_CLAMP_TO_ASIA:
+                asia = asia_range_at(pt, ph, pl, entry_t)
+                if asia is not None:
+                    a_hi, a_lo = asia
+                    if a_lo < entry < a_hi:
+                        if is_long and tp > a_hi:
+                            tp = a_hi
+                        elif not is_long and tp < a_lo:
+                            tp = a_lo
+                    elif (is_long and tp > a_hi) or (not is_long
+                                                     and tp < a_lo):
+                        continue
+
             # rr floor, same as the live evaluator: TP must be at least
             # MIN_RR × the stop distance.
             if abs(tp - entry) < MIN_RR * abs(entry - sl):
@@ -130,6 +155,8 @@ def run_sweep_trades(h15, pt, ph, pl, pc):
                 "entry_price": entry, "sl": sl, "tp": tp,
                 "reason": reason_ if resolved else "open",
                 "resolved": resolved, "net": round(net, 2),
+                "exit_time": int(xt) if resolved else None,
+                "exit_price": round(float(px), 2) if resolved else None,
             })
     trades.sort(key=lambda t: t["entry_time"])
     return trades
